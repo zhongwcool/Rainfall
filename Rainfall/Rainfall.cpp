@@ -3,6 +3,9 @@
 #include "RainSystem.h"
 #include "RainRenderer.h"
 
+#include <shlobj.h>
+#include <string>
+
 namespace
 {
     constexpr UINT WM_TRAYICON = WM_APP + 1;
@@ -12,6 +15,7 @@ namespace
 
     HINSTANCE g_instance = nullptr;
     bool g_paused = false;
+    bool g_lightMode = false;
     bool g_trayAdded = false;
     int g_aliveWindows = 0;
 
@@ -29,6 +33,11 @@ namespace
     bool AddTrayIcon(HWND hwnd);
     void RemoveTrayIcon(HWND hwnd);
     void TogglePause();
+    void ToggleLightMode();
+    void ApplyLightMode();
+    std::wstring GetConfigPath();
+    void LoadConfig();
+    void SaveConfig();
     void DestroyAllOverlays();
     bool CreateOverlayForMonitor(HMONITOR monitor);
     BOOL CALLBACK MonitorEnumProc(HMONITOR monitor, HDC, LPRECT, LPARAM);
@@ -48,6 +57,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     {
         return 1;
     }
+
+    LoadConfig();
 
     if (!RainRenderer::InitializeFactory())
     {
@@ -76,6 +87,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         CoUninitialize();
         return 1;
     }
+
+    ApplyLightMode();
 
     MSG msg{};
     while (GetMessage(&msg, nullptr, 0, 0))
@@ -226,6 +239,67 @@ namespace
         g_trayAdded = false;
     }
 
+    std::wstring GetConfigPath()
+    {
+        PWSTR appData = nullptr;
+        std::wstring path;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData)))
+        {
+            path = appData;
+            CoTaskMemFree(appData);
+            path += L"\\Rainfall";
+            CreateDirectoryW(path.c_str(), nullptr);
+            path += L"\\config.ini";
+        }
+        return path;
+    }
+
+    void LoadConfig()
+    {
+        const std::wstring path = GetConfigPath();
+        if (path.empty())
+        {
+            return;
+        }
+
+        g_lightMode = GetPrivateProfileIntW(L"Rainfall", L"LightMode", 0, path.c_str()) != 0;
+    }
+
+    void SaveConfig()
+    {
+        const std::wstring path = GetConfigPath();
+        if (path.empty())
+        {
+            return;
+        }
+
+        WritePrivateProfileStringW(L"Rainfall", L"LightMode", g_lightMode ? L"1" : L"0", path.c_str());
+    }
+
+    void ApplyLightMode()
+    {
+        // 浅色模式下用中间灰，深浅背景都能看见；关闭后恢复纯白
+        const float gray = g_lightMode ? 0.85f : 1.0f;
+
+        for (auto& overlay : g_overlays)
+        {
+            if (!overlay.hwnd || !overlay.renderer)
+            {
+                continue;
+            }
+
+            overlay.renderer->SetDropColor(gray, gray, gray);
+            overlay.renderer->Render(*overlay.rainSystem);
+        }
+    }
+
+    void ToggleLightMode()
+    {
+        g_lightMode = !g_lightMode;
+        ApplyLightMode();
+        SaveConfig();
+    }
+
     void TogglePause()
     {
         g_paused = !g_paused;
@@ -258,6 +332,8 @@ namespace
 
         const wchar_t* pauseLabel = g_paused ? L"继续(&R)" : L"暂停(&P)";
         AppendMenuW(menu, MF_STRING, IDM_PAUSE, pauseLabel);
+        AppendMenuW(menu, MF_STRING | (g_lightMode ? MF_CHECKED : MF_UNCHECKED),
+            IDM_LIGHT_MODE, L"浅色背景增强(&L)");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, L"退出(&X)");
 
@@ -302,6 +378,9 @@ namespace
             {
             case IDM_PAUSE:
                 TogglePause();
+                return 0;
+            case IDM_LIGHT_MODE:
+                ToggleLightMode();
                 return 0;
             case IDM_TRAY_EXIT:
                 RemoveTrayIcon(hwnd);

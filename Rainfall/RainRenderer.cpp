@@ -1,4 +1,4 @@
-#include "RainRenderer.h"
+﻿#include "RainRenderer.h"
 
 #include <cmath>
 
@@ -135,6 +135,13 @@ bool RainRenderer::Initialize(HWND hwnd, int width, int height)
     return CreateRenderTarget(width, height);
 }
 
+void RainRenderer::SetDropColor(float r, float g, float b)
+{
+    colorR_ = r;
+    colorG_ = g;
+    colorB_ = b;
+}
+
 void RainRenderer::Resize(int width, int height)
 {
     if (width != width_ || height != height_)
@@ -173,7 +180,7 @@ void RainRenderer::Render(const RainSystem& system)
         const float tailX = drop.x - sinA * drop.length;
         const float tailY = drop.y - cosA * drop.length;
 
-        brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, drop.alpha));
+        brush_->SetColor(D2D1::ColorF(colorR_, colorG_, colorB_, drop.alpha));
         renderTarget_->DrawLine(
             D2D1::Point2F(tailX, tailY),
             D2D1::Point2F(drop.x, drop.y),

@@ -1,4 +1,4 @@
-﻿//{{NO_DEPENDENCIES}}
+//{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ 生成的包含文件。
 // 使用者 Rainfall.rc
 
@@ -11,6 +11,7 @@
 #define IDM_EXIT				105
 #define IDM_PAUSE				106
 #define IDM_TRAY_EXIT			107
+#define IDM_LIGHT_MODE			111
 #define IDI_RAINFALL			107
 #define IDI_SMALL				108
 #define IDC_RAINFALL			109
