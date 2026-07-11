@@ -4,10 +4,6 @@
 
 Microsoft::WRL::ComPtr<ID2D1Factory> RainRenderer::factory_;
 
-namespace
-{
-    constexpr float kAngleRad = 0.18f;
-}
 
 bool RainRenderer::InitializeFactory()
 {
@@ -172,8 +168,9 @@ void RainRenderer::Render(const RainSystem& system)
     renderTarget_->BeginDraw();
     renderTarget_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-    const float sinA = std::sin(kAngleRad);
-    const float cosA = std::cos(kAngleRad);
+    const float angle = system.GetAngleRad();
+    const float sinA = std::sin(angle);
+    const float cosA = std::cos(angle);
 
     for (const Raindrop& drop : system.GetDrops())
     {
