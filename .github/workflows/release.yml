@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: 编译 Release x64
+        shell: pwsh
+        run: |
+          # 本地工程使用 v145 (VS2022)；GitHub 虚拟机可能没有该工具集，
+          # 因此在命令行临时覆盖为可用的工具集，无需修改工程文件。
+          $toolsets = @('v145', 'v144', 'v143')
+          $built = $false
+          foreach ($ts in $toolsets) {
+            Write-Host "尝试使用工具集 $ts 编译..."
+            msbuild Rainfall\Rainfall.vcxproj `
+              /p:Configuration=Release `
+              /p:Platform=x64 `
+              /p:PlatformToolset=$ts `
+              /m
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "使用 $ts 编译成功"
+              $built = $true
+              break
+            }
+            Write-Host "工具集 $ts 不可用或编译失败，尝试下一个..."
+          }
+          if (-not $built) {
+            Write-Error "所有工具集均编译失败"
+            exit 1
+          }
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $exe = 'Rainfall\x64\Release\Rainfall.exe'
+          if (-not (Test-Path $exe)) {
+            Write-Error "未找到编译产物: $exe"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item $exe dist\
+          Compress-Archive -Path dist\Rainfall.exe -DestinationPath "Rainfall-${{ github.ref_name }}-x64.zip" -Force
+
+      - name: 发布到 GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Rainfall-${{ github.ref_name }}-x64.zip
+          generate_release_notes: true
