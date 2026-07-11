@@ -465,7 +465,7 @@ namespace
         HMENU densityMenu = CreatePopupMenu();
         HMENU windMenu = CreatePopupMenu();
         HMENU speedMenu = CreatePopupMenu();
-        const wchar_t* levelLabels[kLevelCount] = { L"1 档", L"2 档", L"3 档", L"4 档", L"5 档" };
+        const wchar_t* levelLabels[kLevelCount] = { L"1 档", L"2 档", L"默认", L"4 档", L"5 档" };
         for (int i = 0; i < kLevelCount; ++i)
         {
             AppendMenuW(lengthMenu, MF_STRING | (i == g_lengthLevel ? MF_CHECKED : MF_UNCHECKED),

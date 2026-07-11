@@ -87,14 +87,42 @@ void RainSystem::ApplyDepth(Raindrop& drop)
 
 void RainSystem::Respawn(Raindrop& drop, bool randomY)
 {
-    std::uniform_real_distribution<float> xDist(0.0f, static_cast<float>(width_));
-    std::uniform_real_distribution<float> yDist(-static_cast<float>(height_), 0.0f);
     std::uniform_real_distribution<float> depthDist(0.0f, 1.0f);
 
-    drop.x = xDist(rng_);
-    drop.y = randomY ? yDist(rng_) : -drop.length;
     drop.depth = depthDist(rng_);
     ApplyDepth(drop);
+
+    std::uniform_real_distribution<float> xDist(0.0f, static_cast<float>(width_));
+    std::uniform_real_distribution<float> yDist(0.0f, static_cast<float>(height_));
+
+    if (randomY)
+    {
+        // Fill the screen initially so diagonal rain has no empty corner.
+        drop.x = xDist(rng_);
+        drop.y = yDist(rng_);
+        return;
+    }
+
+    const float angle = GetAngleRad();
+    const float dx = std::sin(angle);
+    const float dy = std::cos(angle);
+
+    // Diagonal rain enters through both the top and left edges.
+    // Weight each edge by incoming flow to keep density uniform.
+    const float topFlow = static_cast<float>(width_) * dy;
+    const float leftFlow = static_cast<float>(height_) * dx;
+    std::uniform_real_distribution<float> entryDist(0.0f, topFlow + leftFlow);
+
+    if (entryDist(rng_) < topFlow)
+    {
+        drop.x = xDist(rng_);
+        drop.y = 0.0f;
+    }
+    else
+    {
+        drop.x = 0.0f;
+        drop.y = yDist(rng_);
+    }
 }
 
 void RainSystem::Update()
