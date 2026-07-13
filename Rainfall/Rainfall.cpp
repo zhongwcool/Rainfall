@@ -27,8 +27,8 @@ namespace
     constexpr float kDensityScales[kLevelCount] = { 0.4f, 0.7f, 1.0f, 1.5f, 2.0f };
     // 风力：角度倍率，越大越倾斜（第 3 挡 = 原始轻微倾斜）
     constexpr float kWindScales[kLevelCount] = { 0.3f, 0.6f, 1.0f, 2.5f, 4.5f };
-    // 雨势：速度倍率，越大落得越快
-    constexpr float kSpeedScales[kLevelCount] = { 0.5f, 0.75f, 1.0f, 1.5f, 2.2f };
+    // 雨势：速度倍率，越大落得越快（默认第 3 挡 = 原第 4 挡的 1.5）
+    constexpr float kSpeedScales[kLevelCount] = { 0.75f, 1.1f, 1.5f, 2.0f, 2.6f };
 
     int g_lengthLevel = kDefaultLevel;
     int g_densityLevel = kDefaultLevel;
@@ -333,9 +333,7 @@ namespace
 
     void ApplyLightMode()
     {
-        // 浅色模式下用中间灰，深浅背景都能看见；关闭后恢复纯白
-        const float gray = g_lightMode ? 0.85f : 1.0f;
-
+        // 浅色模式：冷灰蓝雨丝 + 白色高光 + 尾部渐隐；关闭后恢复纯白实线
         for (auto& overlay : g_overlays)
         {
             if (!overlay.hwnd || !overlay.renderer)
@@ -343,7 +341,7 @@ namespace
                 continue;
             }
 
-            overlay.renderer->SetDropColor(gray, gray, gray);
+            overlay.renderer->SetLightMode(g_lightMode);
             overlay.renderer->Render(*overlay.rainSystem);
         }
     }

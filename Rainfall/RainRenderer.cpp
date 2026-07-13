@@ -1,5 +1,6 @@
 ﻿#include "RainRenderer.h"
 
+#include <algorithm>
 #include <cmath>
 
 Microsoft::WRL::ComPtr<ID2D1Factory> RainRenderer::factory_;
@@ -34,6 +35,8 @@ RainRenderer::~RainRenderer()
 void RainRenderer::ReleaseResources()
 {
     brush_.Reset();
+    bodyBrush_.Reset();
+    highlightBrush_.Reset();
     renderTarget_.Reset();
 
     if (memDc_)
@@ -122,7 +125,45 @@ bool RainRenderer::CreateRenderTarget(int width, int height)
         return false;
     }
 
+    if (!CreateLightModeBrushes())
+    {
+        ReleaseResources();
+        return false;
+    }
+
     return true;
+}
+
+bool RainRenderer::CreateLightModeBrushes()
+{
+    // Tail fully transparent, head most visible: mimics a real rain streak.
+    const auto makeGradientBrush = [this](const D2D1_COLOR_F& color, float headAlpha,
+        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush>& outBrush) -> bool
+    {
+        D2D1_GRADIENT_STOP stops[2]{};
+        stops[0].position = 0.0f;
+        stops[0].color = D2D1::ColorF(color.r, color.g, color.b, 0.0f);
+        stops[1].position = 1.0f;
+        stops[1].color = D2D1::ColorF(color.r, color.g, color.b, headAlpha);
+
+        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> collection;
+        if (FAILED(renderTarget_->CreateGradientStopCollection(stops, 2, collection.GetAddressOf())))
+        {
+            return false;
+        }
+
+        return SUCCEEDED(renderTarget_->CreateLinearGradientBrush(
+            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(0.0f, 1.0f)),
+            collection.Get(),
+            outBrush.GetAddressOf()));
+    };
+
+    // Body: cool gray-blue, close to the tint of real rain.
+    const D2D1_COLOR_F bodyColor = D2D1::ColorF(0.35f, 0.42f, 0.52f, 1.0f);
+    const D2D1_COLOR_F highlightColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
+
+    return makeGradientBrush(bodyColor, 0.62f, bodyBrush_)
+        && makeGradientBrush(highlightColor, 0.85f, highlightBrush_);
 }
 
 bool RainRenderer::Initialize(HWND hwnd, int width, int height)
@@ -131,11 +172,9 @@ bool RainRenderer::Initialize(HWND hwnd, int width, int height)
     return CreateRenderTarget(width, height);
 }
 
-void RainRenderer::SetDropColor(float r, float g, float b)
+void RainRenderer::SetLightMode(bool enabled)
 {
-    colorR_ = r;
-    colorG_ = g;
-    colorB_ = b;
+    lightMode_ = enabled;
 }
 
 void RainRenderer::Resize(int width, int height)
@@ -172,17 +211,49 @@ void RainRenderer::Render(const RainSystem& system)
     const float sinA = std::sin(angle);
     const float cosA = std::cos(angle);
 
-    for (const Raindrop& drop : system.GetDrops())
+    if (lightMode_ && bodyBrush_ && highlightBrush_)
     {
-        const float tailX = drop.x - sinA * drop.length;
-        const float tailY = drop.y - cosA * drop.length;
+        // Unit vector perpendicular to the fall direction, used to offset the highlight.
+        const float perpX = cosA;
+        const float perpY = -sinA;
 
-        brush_->SetColor(D2D1::ColorF(colorR_, colorG_, colorB_, drop.alpha));
-        renderTarget_->DrawLine(
-            D2D1::Point2F(tailX, tailY),
-            D2D1::Point2F(drop.x, drop.y),
-            brush_.Get(),
-            drop.thickness);
+        for (const Raindrop& drop : system.GetDrops())
+        {
+            const D2D1_POINT_2F head = D2D1::Point2F(drop.x, drop.y);
+            const D2D1_POINT_2F tail = D2D1::Point2F(
+                drop.x - sinA * drop.length,
+                drop.y - cosA * drop.length);
+
+            bodyBrush_->SetStartPoint(tail);
+            bodyBrush_->SetEndPoint(head);
+            bodyBrush_->SetOpacity(drop.alpha);
+            renderTarget_->DrawLine(tail, head, bodyBrush_.Get(), drop.thickness * 0.85f);
+
+            const float offset = drop.thickness * 0.25f;
+            const D2D1_POINT_2F hlTail = D2D1::Point2F(tail.x + perpX * offset, tail.y + perpY * offset);
+            const D2D1_POINT_2F hlHead = D2D1::Point2F(head.x + perpX * offset, head.y + perpY * offset);
+
+            highlightBrush_->SetStartPoint(hlTail);
+            highlightBrush_->SetEndPoint(hlHead);
+            highlightBrush_->SetOpacity(drop.alpha * 0.9f);
+            renderTarget_->DrawLine(hlTail, hlHead, highlightBrush_.Get(),
+                (std::max)(drop.thickness * 0.35f, 0.6f));
+        }
+    }
+    else
+    {
+        for (const Raindrop& drop : system.GetDrops())
+        {
+            const float tailX = drop.x - sinA * drop.length;
+            const float tailY = drop.y - cosA * drop.length;
+
+            brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, drop.alpha));
+            renderTarget_->DrawLine(
+                D2D1::Point2F(tailX, tailY),
+                D2D1::Point2F(drop.x, drop.y),
+                brush_.Get(),
+                drop.thickness);
+        }
     }
 
     if (FAILED(renderTarget_->EndDraw()))
