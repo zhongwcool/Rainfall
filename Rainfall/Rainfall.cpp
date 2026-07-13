@@ -46,6 +46,11 @@ namespace
     std::vector<OverlayWindow> g_overlays;
 
     void ShowTrayMenu(HWND hwnd);
+    void ShowAboutDialog(HWND hwnd);
+    INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT message, WPARAM wParam, LPARAM lParam);
+    void ShowCopyToast(const wchar_t* message);
+    LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    void RegisterToastClass();
     bool AddTrayIcon(HWND hwnd);
     void RemoveTrayIcon(HWND hwnd);
     void TogglePause();
@@ -484,6 +489,7 @@ namespace
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speedMenu), L"雨势(&S)");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"关于(&A)");
         AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, L"退出(&X)");
 
         SetForegroundWindow(hwnd);
@@ -493,6 +499,213 @@ namespace
         TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
             cursor.x, cursor.y, 0, hwnd, nullptr);
         DestroyMenu(menu);
+    }
+
+    constexpr wchar_t kAuthorEmail[] = L"zhongwcool@163.com";
+
+    void CenterWindowOnScreen(HWND wnd)
+    {
+        RECT rc{};
+        if (!GetWindowRect(wnd, &rc))
+        {
+            return;
+        }
+
+        const int width = rc.right - rc.left;
+        const int height = rc.bottom - rc.top;
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        const int x = (screenW - width) / 2;
+        const int y = (screenH - height) / 2;
+        SetWindowPos(wnd, HWND_TOP, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    }
+
+    void CopyTextToClipboard(const wchar_t* text)
+    {
+        if (!OpenClipboard(nullptr))
+        {
+            return;
+        }
+
+        EmptyClipboard();
+
+        const size_t bytes = (wcslen(text) + 1) * sizeof(wchar_t);
+        HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if (mem)
+        {
+            void* dst = GlobalLock(mem);
+            if (dst)
+            {
+                memcpy(dst, text, bytes);
+                GlobalUnlock(mem);
+                SetClipboardData(CF_UNICODETEXT, mem);
+            }
+        }
+
+        CloseClipboard();
+    }
+
+    constexpr UINT_PTR kToastTimerId = 99;
+    constexpr wchar_t kToastClassName[] = L"RainfallToastClass";
+    HWND g_toastWnd = nullptr;
+
+    void RegisterToastClass()
+    {
+        static bool registered = false;
+        if (registered)
+        {
+            return;
+        }
+
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = ToastWndProc;
+        wc.hInstance = g_instance;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = CreateSolidBrush(RGB(50, 50, 50));
+        wc.lpszClassName = kToastClassName;
+        RegisterClassExW(&wc);
+        registered = true;
+    }
+
+    LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        switch (message)
+        {
+        case WM_PAINT:
+        {
+            const auto* text = reinterpret_cast<const wchar_t*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            PAINTSTRUCT ps{};
+            HDC dc = BeginPaint(hwnd, &ps);
+
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            SetBkMode(dc, TRANSPARENT);
+            SetTextColor(dc, RGB(255, 255, 255));
+            HFONT oldFont = static_cast<HFONT>(SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)));
+            if (text)
+            {
+                DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            SelectObject(dc, oldFont);
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+        case WM_TIMER:
+            if (wParam == kToastTimerId)
+            {
+                DestroyWindow(hwnd);
+            }
+            return 0;
+        case WM_DESTROY:
+            if (g_toastWnd == hwnd)
+            {
+                g_toastWnd = nullptr;
+            }
+            free(reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)));
+            return 0;
+        default:
+            break;
+        }
+
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    void ShowCopyToast(const wchar_t* message)
+    {
+        RegisterToastClass();
+
+        if (g_toastWnd)
+        {
+            KillTimer(g_toastWnd, kToastTimerId);
+            DestroyWindow(g_toastWnd);
+            g_toastWnd = nullptr;
+        }
+
+        wchar_t* text = _wcsdup(message);
+        if (!text)
+        {
+            return;
+        }
+
+        constexpr int toastW = 300;
+        constexpr int toastH = 44;
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        const int x = (screenW - toastW) / 2;
+        const int y = screenH - toastH - 80;
+
+        g_toastWnd = CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            kToastClassName,
+            L"",
+            WS_POPUP | WS_BORDER,
+            x,
+            y,
+            toastW,
+            toastH,
+            nullptr,
+            nullptr,
+            g_instance,
+            nullptr);
+
+        if (!g_toastWnd)
+        {
+            free(text);
+            return;
+        }
+
+        SetWindowLongPtrW(g_toastWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(text));
+        ShowWindow(g_toastWnd, SW_SHOWNOACTIVATE);
+        UpdateWindow(g_toastWnd);
+        SetTimer(g_toastWnd, kToastTimerId, 2000, nullptr);
+    }
+
+    INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        switch (message)
+        {
+        case WM_INITDIALOG:
+            CenterWindowOnScreen(dlg);
+            return TRUE;
+        case WM_SETCURSOR:
+            if (reinterpret_cast<HWND>(lParam) == GetDlgItem(dlg, IDC_ABOUT_EMAIL))
+            {
+                SetCursor(LoadCursor(nullptr, IDC_HAND));
+                return TRUE;
+            }
+            break;
+        case WM_CTLCOLORSTATIC:
+            if (reinterpret_cast<HWND>(lParam) == GetDlgItem(dlg, IDC_ABOUT_EMAIL))
+            {
+                HDC dc = reinterpret_cast<HDC>(wParam);
+                SetTextColor(dc, RGB(0, 102, 204));
+                SetBkMode(dc, TRANSPARENT);
+                return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_3DFACE));
+            }
+            break;
+        case WM_COMMAND:
+            if (LOWORD(wParam) == IDC_ABOUT_EMAIL && HIWORD(wParam) == STN_CLICKED)
+            {
+                CopyTextToClipboard(kAuthorEmail);
+                ShowCopyToast(L"邮箱已复制到剪贴板");
+                return TRUE;
+            }
+            if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
+            {
+                EndDialog(dlg, LOWORD(wParam));
+                return TRUE;
+            }
+            break;
+        default:
+            break;
+        }
+        return FALSE;
+    }
+
+    void ShowAboutDialog(HWND hwnd)
+    {
+        DialogBoxW(g_instance, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, AboutDlgProc);
     }
 
     LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -552,6 +765,9 @@ namespace
                 return 0;
             case IDM_LIGHT_MODE:
                 ToggleLightMode();
+                return 0;
+            case IDM_ABOUT:
+                ShowAboutDialog(hwnd);
                 return 0;
             case IDM_TRAY_EXIT:
                 RemoveTrayIcon(hwnd);

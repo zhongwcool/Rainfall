@@ -7,6 +7,7 @@
 #define IDR_MAINFRAME			128
 #define IDD_RAINFALL_DIALOG	102
 #define IDD_ABOUTBOX			103
+#define IDC_ABOUT_EMAIL			200
 #define IDM_ABOUT				104
 #define IDM_EXIT				105
 #define IDM_PAUSE				106
