@@ -34,6 +34,7 @@ namespace
     int g_densityLevel = kDefaultLevel;
     int g_windLevel = kDefaultLevel;
     int g_speedLevel = kDefaultLevel;
+    bool g_windRight = true; // true: 向右下；false: 向左下
 
     struct OverlayWindow
     {
@@ -60,6 +61,8 @@ namespace
     void ApplyDensity();
     void ApplyWind();
     void ApplySpeed();
+    void ApplyWindDirection();
+    void SetWindDirection(bool right);
     void SetLengthLevel(int level);
     void SetDensityLevel(int level);
     void SetWindLevel(int level);
@@ -121,6 +124,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     ApplyDensity();
     ApplyWind();
     ApplySpeed();
+    ApplyWindDirection();
     ApplyLightMode();
 
     MSG msg{};
@@ -308,6 +312,7 @@ namespace
         g_speedLevel = std::clamp(
             static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"SpeedLevel", kDefaultLevel, path.c_str())),
             0, kLevelCount - 1);
+        g_windRight = GetPrivateProfileIntW(L"Rainfall", L"WindRight", 1, path.c_str()) != 0;
     }
 
     void SaveConfig()
@@ -329,6 +334,7 @@ namespace
         WritePrivateProfileStringW(L"Rainfall", L"WindLevel", buf, path.c_str());
         _itow_s(g_speedLevel, buf, 10);
         WritePrivateProfileStringW(L"Rainfall", L"SpeedLevel", buf, path.c_str());
+        WritePrivateProfileStringW(L"Rainfall", L"WindRight", g_windRight ? L"1" : L"0", path.c_str());
     }
 
     void ApplyLightMode()
@@ -422,6 +428,24 @@ namespace
         SaveConfig();
     }
 
+    void ApplyWindDirection()
+    {
+        for (auto& overlay : g_overlays)
+        {
+            if (overlay.rainSystem)
+            {
+                overlay.rainSystem->SetWindDirection(g_windRight ? 1 : -1);
+            }
+        }
+    }
+
+    void SetWindDirection(bool right)
+    {
+        g_windRight = right;
+        ApplyWindDirection();
+        SaveConfig();
+    }
+
     void SetSpeedLevel(int level)
     {
         g_speedLevel = std::clamp(level, 0, kLevelCount - 1);
@@ -468,6 +492,11 @@ namespace
         HMENU densityMenu = CreatePopupMenu();
         HMENU windMenu = CreatePopupMenu();
         HMENU speedMenu = CreatePopupMenu();
+        HMENU dirMenu = CreatePopupMenu();
+        AppendMenuW(dirMenu, MF_STRING | (g_windRight ? MF_CHECKED : MF_UNCHECKED),
+            IDM_DIR_RIGHT, L"向右下");
+        AppendMenuW(dirMenu, MF_STRING | (!g_windRight ? MF_CHECKED : MF_UNCHECKED),
+            IDM_DIR_LEFT, L"向左下");
         const wchar_t* levelLabels[kLevelCount] = { L"1 档", L"2 档", L"默认", L"4 档", L"5 档" };
         for (int i = 0; i < kLevelCount; ++i)
         {
@@ -485,6 +514,7 @@ namespace
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(densityMenu), L"雨滴密度(&D)");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(windMenu), L"风力(&W)");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speedMenu), L"雨势(&S)");
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(dirMenu), L"风向(&F)");
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"关于(&A)");
@@ -763,6 +793,12 @@ namespace
                 return 0;
             case IDM_LIGHT_MODE:
                 ToggleLightMode();
+                return 0;
+            case IDM_DIR_RIGHT:
+                SetWindDirection(true);
+                return 0;
+            case IDM_DIR_LEFT:
+                SetWindDirection(false);
                 return 0;
             case IDM_ABOUT:
                 ShowAboutDialog(hwnd);

@@ -24,6 +24,8 @@ public:
     void SetLengthScale(float scale);
     void SetWindScale(float scale);
     void SetSpeedScale(float scale);
+    // dir >= 0: lean right; dir < 0: lean left
+    void SetWindDirection(int dir);
 
     float GetAngleRad() const;
 
@@ -41,5 +43,6 @@ private:
     float lengthScale_ = 1.0f;
     float windScale_ = 1.0f;
     float speedScale_ = 1.0f;
+    float windDirection_ = 1.0f;
     std::mt19937 rng_{ std::random_device{}() };
 };

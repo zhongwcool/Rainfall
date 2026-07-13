@@ -70,9 +70,14 @@ void RainSystem::SetSpeedScale(float scale)
     }
 }
 
+void RainSystem::SetWindDirection(int dir)
+{
+    windDirection_ = dir >= 0 ? 1.0f : -1.0f;
+}
+
 float RainSystem::GetAngleRad() const
 {
-    return std::min(kBaseAngleRad * windScale_, kMaxAngleRad);
+    return std::min(kBaseAngleRad * windScale_, kMaxAngleRad) * windDirection_;
 }
 
 void RainSystem::ApplyDepth(Raindrop& drop)
@@ -107,11 +112,12 @@ void RainSystem::Respawn(Raindrop& drop, bool randomY)
     const float dx = std::sin(angle);
     const float dy = std::cos(angle);
 
-    // Diagonal rain enters through both the top and left edges.
+    // Diagonal rain enters through the top edge plus the windward side edge
+    // (left when leaning right, right when leaning left).
     // Weight each edge by incoming flow to keep density uniform.
     const float topFlow = static_cast<float>(width_) * dy;
-    const float leftFlow = static_cast<float>(height_) * dx;
-    std::uniform_real_distribution<float> entryDist(0.0f, topFlow + leftFlow);
+    const float sideFlow = static_cast<float>(height_) * std::fabs(dx);
+    std::uniform_real_distribution<float> entryDist(0.0f, topFlow + sideFlow);
 
     if (entryDist(rng_) < topFlow)
     {
@@ -120,7 +126,7 @@ void RainSystem::Respawn(Raindrop& drop, bool randomY)
     }
     else
     {
-        drop.x = 0.0f;
+        drop.x = dx >= 0.0f ? 0.0f : static_cast<float>(width_);
         drop.y = yDist(rng_);
     }
 }

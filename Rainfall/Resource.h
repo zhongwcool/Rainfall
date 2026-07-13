@@ -17,6 +17,8 @@
 #define IDM_DENSITY_BASE		130
 #define IDM_WIND_BASE			140
 #define IDM_SPEED_BASE			150
+#define IDM_DIR_RIGHT			160
+#define IDM_DIR_LEFT			161
 #define IDI_RAINFALL			107
 #define IDI_SMALL				108
 #define IDC_RAINFALL			109
