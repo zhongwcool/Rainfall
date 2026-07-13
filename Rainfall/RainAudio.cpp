@@ -118,11 +118,19 @@ void RainAudio::Shutdown()
 void RainAudio::SetEnabled(bool enabled)
 {
     enabled_ = enabled;
+    if (callback_.bufferEndEvent)
+    {
+        SetEvent(callback_.bufferEndEvent); // 唤醒可能在休眠的音频线程
+    }
 }
 
 void RainAudio::SetPaused(bool paused)
 {
     paused_ = paused;
+    if (callback_.bufferEndEvent)
+    {
+        SetEvent(callback_.bufferEndEvent);
+    }
 }
 
 void RainAudio::SetIntensity(float intensity)
@@ -206,9 +214,32 @@ void RainAudio::StreamThread()
 {
     const UINT32 samplesPerBuffer = kFramesPerBuffer * kChannels;
     UINT32 next = 0;
+    bool sleeping = false;
 
     while (!quit_)
     {
+        const bool audible = enabled_.load() && !paused_.load();
+
+        // 声音关闭且淡出已完成：停掉声音通道并深度休眠，完全不再计算
+        if (!audible && gate_ < 0.001f)
+        {
+            if (!sleeping)
+            {
+                sourceVoice_->Stop(0);
+                sourceVoice_->FlushSourceBuffers();
+                gate_ = 0.0f;
+                sleeping = true;
+            }
+            WaitForSingleObject(callback_.bufferEndEvent, INFINITE);
+            continue;
+        }
+
+        if (sleeping)
+        {
+            sourceVoice_->Start(0);
+            sleeping = false;
+        }
+
         XAUDIO2_VOICE_STATE state{};
         sourceVoice_->GetState(&state, XAUDIO2_VOICE_NOSAMPLESPLAYED);
 
