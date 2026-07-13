@@ -1,0 +1,10 @@
+#pragma once
+
+// 修改版本号后重新编译即可；推送 v* tag 时 CI 会自动覆盖此文件。
+#define RAINFALL_VERSION_MAJOR 1
+#define RAINFALL_VERSION_MINOR 0
+#define RAINFALL_VERSION_PATCH 0
+#define RAINFALL_VERSION_BUILD 0
+
+#define RAINFALL_VERSION_STRING "1.0.0.0"
+#define RAINFALL_VERSION_STRING_SHORT "1.0.0"
