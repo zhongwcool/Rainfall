@@ -19,40 +19,6 @@ jobs:
       - name: 设置 MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: 根据 tag 写入版本号
-        shell: pwsh
-        run: |
-          # 从 tag（如 v1.0.1 或 v1.0.1.5）解析版本号，覆盖 version.h
-          $tag = '${{ github.ref_name }}'
-          $ver = $tag.TrimStart('v', 'V')
-          if ($ver -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
-            Write-Error "tag 格式不正确，应为 vX.Y.Z 或 vX.Y.Z.B，实际为: $tag"
-            exit 1
-          }
-          $parts = $ver.Split('.')
-          $major = $parts[0]
-          $minor = $parts[1]
-          $patch = $parts[2]
-          $build = if ($parts.Length -ge 4) { $parts[3] } else { '0' }
-          $short = "$major.$minor.$patch"
-          $full  = "$major.$minor.$patch.$build"
-
-          $content = @"
-#pragma once
-
-// 该文件在 CI 中根据推送的 v* tag 自动生成，请勿手动修改用于发布的版本号。
-#define RAINFALL_VERSION_MAJOR $major
-#define RAINFALL_VERSION_MINOR $minor
-#define RAINFALL_VERSION_PATCH $patch
-#define RAINFALL_VERSION_BUILD $build
-
-#define RAINFALL_VERSION_STRING "$full"
-#define RAINFALL_VERSION_STRING_SHORT "$short"
-"@
-          Set-Content -Path Rainfall\version.h -Value $content -Encoding UTF8
-          Write-Host "已写入版本号: $full"
-          Get-Content Rainfall\version.h
-
       - name: 编译 Release x64
         shell: pwsh
         run: |
