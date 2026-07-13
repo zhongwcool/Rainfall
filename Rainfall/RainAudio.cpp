@@ -154,15 +154,20 @@ void RainAudio::FillBuffer(short* samples)
 
     const float t = intensity_;
 
-    // 底噪（雨幕沙沙声）：强度越大越响、越"亮"
-    const float hissGain = 0.015f + 0.24f * t * std::sqrt(t);
+    // 底噪（雨幕沙沙声）：小雨时几乎为零，避免听成溪流；大雨时才铺满
+    const float hissGain = 0.002f + 0.30f * t * t * std::sqrt(t);
     const float lpCoeff = Lerp(0.045f, 0.22f, t);
 
-    // 雨点脆响：每声道每秒触发次数
-    const float dropsPerSecond = Lerp(3.0f, 55.0f, t * t);
+    // 雨点：每声道每秒触发次数（小雨稀疏，颗颗分明）
+    const float dropsPerSecond = Lerp(1.6f, 55.0f, t * t);
     const float meanInterval = static_cast<float>(kSampleRate) / std::max(dropsPerSecond, 0.5f);
-    const float dropGain = Lerp(0.10f, 0.30f, t);
+    const float dropGain = Lerp(0.16f, 0.30f, t);
     const float dropDecay = 0.9974f; // 约 9ms 衰减的短促"嗒"声
+
+    // 芭蕉叶共鸣：小雨时突出宽大叶面的低沉"啵"声，大雨时被雨幕淹没
+    const float leafGain = Lerp(1.0f, 0.15f, t) ;
+    const float leafDecayR = Lerp(0.9994f, 0.9985f, t); // 共鸣衰减，小雨余韵略长
+    const float excDecay = 0.965f; // 敲击激励约 1ms，非常短促
 
     const bool audible = enabled_.load() && !paused_.load();
     const float gateTarget = audible ? 1.0f : 0.0f;
@@ -187,7 +192,16 @@ void RainAudio::FillBuffer(short* samples)
             {
                 const float u = NextNoise(state.rng) * 0.5f + 0.5f; // 0~1
                 state.dropCountdown = static_cast<int>(meanInterval * (0.3f + 1.4f * u)) + 1;
-                state.dropEnv = dropGain * (0.4f + 0.6f * (NextNoise(state.rng) * 0.5f + 0.5f));
+
+                const float strength = 0.4f + 0.6f * (NextNoise(state.rng) * 0.5f + 0.5f);
+                state.dropEnv = dropGain * strength;
+
+                // 每颗雨点落在叶面不同位置，共鸣音高随机（约 160~420Hz 的低沉"啵"）
+                const float freq = 160.0f + 260.0f * (NextNoise(state.rng) * 0.5f + 0.5f);
+                const float w = 6.2831853f * freq / static_cast<float>(kSampleRate);
+                state.resCoef1 = 2.0f * leafDecayR * std::cos(w);
+                state.resCoef2 = -leafDecayR * leafDecayR;
+                state.excEnv = strength;
             }
 
             if (state.dropEnv > 0.0001f)
@@ -198,6 +212,18 @@ void RainAudio::FillBuffer(short* samples)
                 sample += (dropNoise - state.dropNoiseLp) * state.dropEnv;
                 state.dropEnv *= dropDecay;
             }
+
+            // 叶面共鸣：短促激励打进谐振器，衰减成有音高的"啵"声
+            float excite = 0.0f;
+            if (state.excEnv > 0.0005f)
+            {
+                excite = NextNoise(state.rng) * state.excEnv * 0.6f;
+                state.excEnv *= excDecay;
+            }
+            const float res = state.resCoef1 * state.res1 + state.resCoef2 * state.res2 + excite;
+            state.res2 = state.res1;
+            state.res1 = res;
+            sample += res * leafGain * 0.22f;
 
             sample *= gate_;
 
