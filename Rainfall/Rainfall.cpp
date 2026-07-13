@@ -2,6 +2,7 @@
 #include "Rainfall.h"
 #include "RainSystem.h"
 #include "RainRenderer.h"
+#include "RainAudio.h"
 
 #include <shlobj.h>
 #include <string>
@@ -36,6 +37,9 @@ namespace
     int g_speedLevel = kDefaultLevel;
     bool g_windRight = true; // true: 向右下；false: 向左下
 
+    bool g_soundEnabled = true;
+    RainAudio g_rainAudio;
+
     struct OverlayWindow
     {
         HWND hwnd = nullptr;
@@ -57,6 +61,8 @@ namespace
     void TogglePause();
     void ToggleLightMode();
     void ApplyLightMode();
+    void ApplySound();
+    void ToggleSound();
     void ApplyLength();
     void ApplyDensity();
     void ApplyWind();
@@ -127,6 +133,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     ApplyWindDirection();
     ApplyLightMode();
 
+    // 声音初始化失败也不影响视觉效果，静默降级
+    if (g_rainAudio.Initialize())
+    {
+        ApplySound();
+    }
+
     MSG msg{};
     while (GetMessage(&msg, nullptr, 0, 0))
     {
@@ -134,6 +146,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         DispatchMessage(&msg);
     }
 
+    g_rainAudio.Shutdown();
     RemoveTrayIcon(g_overlays.empty() ? nullptr : g_overlays.front().hwnd);
     DestroyAllOverlays();
     RainRenderer::ShutdownFactory();
@@ -313,6 +326,7 @@ namespace
             static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"SpeedLevel", kDefaultLevel, path.c_str())),
             0, kLevelCount - 1);
         g_windRight = GetPrivateProfileIntW(L"Rainfall", L"WindRight", 1, path.c_str()) != 0;
+        g_soundEnabled = GetPrivateProfileIntW(L"Rainfall", L"SoundEnabled", 1, path.c_str()) != 0;
     }
 
     void SaveConfig()
@@ -335,6 +349,7 @@ namespace
         _itow_s(g_speedLevel, buf, 10);
         WritePrivateProfileStringW(L"Rainfall", L"SpeedLevel", buf, path.c_str());
         WritePrivateProfileStringW(L"Rainfall", L"WindRight", g_windRight ? L"1" : L"0", path.c_str());
+        WritePrivateProfileStringW(L"Rainfall", L"SoundEnabled", g_soundEnabled ? L"1" : L"0", path.c_str());
     }
 
     void ApplyLightMode()
@@ -356,6 +371,23 @@ namespace
     {
         g_lightMode = !g_lightMode;
         ApplyLightMode();
+        SaveConfig();
+    }
+
+    void ApplySound()
+    {
+        // 雨声强度由"雨势"和"雨滴密度"共同决定：雨越大越密，声音越大越急
+        const float speedT = static_cast<float>(g_speedLevel) / (kLevelCount - 1);
+        const float densityT = static_cast<float>(g_densityLevel) / (kLevelCount - 1);
+        g_rainAudio.SetIntensity(0.65f * speedT + 0.35f * densityT);
+        g_rainAudio.SetEnabled(g_soundEnabled);
+        g_rainAudio.SetPaused(g_paused);
+    }
+
+    void ToggleSound()
+    {
+        g_soundEnabled = !g_soundEnabled;
+        ApplySound();
         SaveConfig();
     }
 
@@ -394,6 +426,7 @@ namespace
     {
         g_densityLevel = std::clamp(level, 0, kLevelCount - 1);
         ApplyDensity();
+        ApplySound();
         SaveConfig();
     }
 
@@ -450,12 +483,14 @@ namespace
     {
         g_speedLevel = std::clamp(level, 0, kLevelCount - 1);
         ApplySpeed();
+        ApplySound();
         SaveConfig();
     }
 
     void TogglePause()
     {
         g_paused = !g_paused;
+        g_rainAudio.SetPaused(g_paused);
 
         for (auto& overlay : g_overlays)
         {
@@ -487,6 +522,8 @@ namespace
         AppendMenuW(menu, MF_STRING, IDM_PAUSE, pauseLabel);
         AppendMenuW(menu, MF_STRING | (g_lightMode ? MF_CHECKED : MF_UNCHECKED),
             IDM_LIGHT_MODE, L"浅色背景增强(&L)");
+        AppendMenuW(menu, MF_STRING | (g_soundEnabled ? MF_CHECKED : MF_UNCHECKED),
+            IDM_SOUND, L"雨声(&V)");
 
         HMENU lengthMenu = CreatePopupMenu();
         HMENU densityMenu = CreatePopupMenu();
@@ -793,6 +830,9 @@ namespace
                 return 0;
             case IDM_LIGHT_MODE:
                 ToggleLightMode();
+                return 0;
+            case IDM_SOUND:
+                ToggleSound();
                 return 0;
             case IDM_DIR_RIGHT:
                 SetWindDirection(true);
