@@ -24,8 +24,8 @@ namespace
     // 5 挡：索引 0~4，默认第 3 挡（索引 2）等于原始效果
     constexpr int kLevelCount = 5;
     constexpr int kDefaultLevel = 2;
-    constexpr float kLengthScales[kLevelCount] = { 1.5f, 2.25f, 3.0f, 4.5f, 6.0f };
-    constexpr float kDensityScales[kLevelCount] = { 0.4f, 0.7f, 1.0f, 1.5f, 2.0f };
+    constexpr float kLengthScales[kLevelCount] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f };
+    constexpr float kDensityScales[kLevelCount] = { 0.1f, 0.35f, 1.0f, 1.5f, 2.0f };
     // 风力：角度倍率，越大越倾斜（第 3 挡 = 原始轻微倾斜）
     constexpr float kWindScales[kLevelCount] = { 0.3f, 0.6f, 1.0f, 2.5f, 4.5f };
     // 雨势：速度倍率，越大落得越快（默认第 3 挡 = 原第 4 挡的 1.5）
