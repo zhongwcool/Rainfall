@@ -21,9 +21,9 @@ public:
     void Update();
 
     void SetDensityScale(float scale);
+    void SetLengthScale(float scale);
     void SetWindScale(float scale);
-    // 雨势：一次性设置速度、长度、粗细倍率（雨势小时雨更慢、更长、更细）
-    void SetIntensity(float speedScale, float lengthScale, float thicknessScale);
+    void SetSpeedScale(float scale);
     // dir >= 0: lean right; dir < 0: lean left
     void SetWindDirection(int dir);
 
@@ -40,10 +40,9 @@ private:
     int width_ = 0;
     int height_ = 0;
     float densityScale_ = 1.0f;
+    float lengthScale_ = 1.0f;
     float windScale_ = 1.0f;
     float speedScale_ = 1.0f;
-    float lengthScale_ = 1.0f;
-    float thicknessScale_ = 1.0f;
     float windDirection_ = 1.0f;
     std::mt19937 rng_{ std::random_device{}() };
 };

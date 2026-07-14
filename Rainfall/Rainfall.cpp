@@ -24,15 +24,14 @@ namespace
     // 5 挡：索引 0~4，默认第 3 挡（索引 2）等于原始效果
     constexpr int kLevelCount = 5;
     constexpr int kDefaultLevel = 2;
+    constexpr float kLengthScales[kLevelCount] = { 0.5f, 0.75f, 1.0f, 1.5f, 2.0f };
     constexpr float kDensityScales[kLevelCount] = { 0.4f, 0.7f, 1.0f, 1.5f, 2.0f };
     // 风力：角度倍率，越大越倾斜（第 3 挡 = 原始轻微倾斜）
     constexpr float kWindScales[kLevelCount] = { 0.3f, 0.6f, 1.0f, 2.5f, 4.5f };
-    // 雨势：速度倍率，影响幅度收窄（默认第 3 挡保持 1.5）
-    constexpr float kSpeedScales[kLevelCount] = { 1.1f, 1.3f, 1.5f, 1.75f, 2.0f };
-    // 雨势同时决定雨滴形态：雨势小时更长更细，第 5 挡为原始长度/粗细
-    constexpr float kIntensityLengthScales[kLevelCount] = { 2.5f, 2.0f, 1.6f, 1.25f, 1.0f };
-    constexpr float kIntensityThicknessScales[kLevelCount] = { 0.55f, 0.7f, 0.8f, 0.9f, 1.0f };
+    // 雨势：速度倍率，越大落得越快（默认第 3 挡 = 原第 4 挡的 1.5）
+    constexpr float kSpeedScales[kLevelCount] = { 0.75f, 1.1f, 1.5f, 2.0f, 2.6f };
 
+    int g_lengthLevel = kDefaultLevel;
     int g_densityLevel = kDefaultLevel;
     int g_windLevel = kDefaultLevel;
     int g_speedLevel = kDefaultLevel;
@@ -64,11 +63,13 @@ namespace
     void ApplyLightMode();
     void ApplySound();
     void ToggleSound();
+    void ApplyLength();
     void ApplyDensity();
     void ApplyWind();
     void ApplySpeed();
     void ApplyWindDirection();
     void SetWindDirection(bool right);
+    void SetLengthLevel(int level);
     void SetDensityLevel(int level);
     void SetWindLevel(int level);
     void SetSpeedLevel(int level);
@@ -125,6 +126,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return 1;
     }
 
+    ApplyLength();
     ApplyDensity();
     ApplyWind();
     ApplySpeed();
@@ -311,6 +313,9 @@ namespace
         }
 
         g_lightMode = GetPrivateProfileIntW(L"Rainfall", L"LightMode", 0, path.c_str()) != 0;
+        g_lengthLevel = std::clamp(
+            static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"LengthLevel", kDefaultLevel, path.c_str())),
+            0, kLevelCount - 1);
         g_densityLevel = std::clamp(
             static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"DensityLevel", kDefaultLevel, path.c_str())),
             0, kLevelCount - 1);
@@ -335,6 +340,8 @@ namespace
         WritePrivateProfileStringW(L"Rainfall", L"LightMode", g_lightMode ? L"1" : L"0", path.c_str());
 
         wchar_t buf[16];
+        _itow_s(g_lengthLevel, buf, 10);
+        WritePrivateProfileStringW(L"Rainfall", L"LengthLevel", buf, path.c_str());
         _itow_s(g_densityLevel, buf, 10);
         WritePrivateProfileStringW(L"Rainfall", L"DensityLevel", buf, path.c_str());
         _itow_s(g_windLevel, buf, 10);
@@ -384,6 +391,18 @@ namespace
         SaveConfig();
     }
 
+    void ApplyLength()
+    {
+        const float scale = kLengthScales[g_lengthLevel];
+        for (auto& overlay : g_overlays)
+        {
+            if (overlay.rainSystem)
+            {
+                overlay.rainSystem->SetLengthScale(scale);
+            }
+        }
+    }
+
     void ApplyDensity()
     {
         const float scale = kDensityScales[g_densityLevel];
@@ -394,6 +413,13 @@ namespace
                 overlay.rainSystem->SetDensityScale(scale);
             }
         }
+    }
+
+    void SetLengthLevel(int level)
+    {
+        g_lengthLevel = std::clamp(level, 0, kLevelCount - 1);
+        ApplyLength();
+        SaveConfig();
     }
 
     void SetDensityLevel(int level)
@@ -418,14 +444,12 @@ namespace
 
     void ApplySpeed()
     {
+        const float scale = kSpeedScales[g_speedLevel];
         for (auto& overlay : g_overlays)
         {
             if (overlay.rainSystem)
             {
-                overlay.rainSystem->SetIntensity(
-                    kSpeedScales[g_speedLevel],
-                    kIntensityLengthScales[g_speedLevel],
-                    kIntensityThicknessScales[g_speedLevel]);
+                overlay.rainSystem->SetSpeedScale(scale);
             }
         }
     }
@@ -501,6 +525,7 @@ namespace
         AppendMenuW(menu, MF_STRING | (g_soundEnabled ? MF_CHECKED : MF_UNCHECKED),
             IDM_SOUND, L"雨声(&V)");
 
+        HMENU lengthMenu = CreatePopupMenu();
         HMENU densityMenu = CreatePopupMenu();
         HMENU windMenu = CreatePopupMenu();
         HMENU speedMenu = CreatePopupMenu();
@@ -512,6 +537,8 @@ namespace
         const wchar_t* levelLabels[kLevelCount] = { L"1 档", L"2 档", L"默认", L"4 档", L"5 档" };
         for (int i = 0; i < kLevelCount; ++i)
         {
+            AppendMenuW(lengthMenu, MF_STRING | (i == g_lengthLevel ? MF_CHECKED : MF_UNCHECKED),
+                IDM_LENGTH_BASE + i, levelLabels[i]);
             AppendMenuW(densityMenu, MF_STRING | (i == g_densityLevel ? MF_CHECKED : MF_UNCHECKED),
                 IDM_DENSITY_BASE + i, levelLabels[i]);
             AppendMenuW(windMenu, MF_STRING | (i == g_windLevel ? MF_CHECKED : MF_UNCHECKED),
@@ -520,6 +547,7 @@ namespace
                 IDM_SPEED_BASE + i, levelLabels[i]);
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lengthMenu), L"雨滴长度(&G)");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(densityMenu), L"雨滴密度(&D)");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(windMenu), L"风力(&W)");
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speedMenu), L"雨势(&S)");
@@ -775,6 +803,11 @@ namespace
         case WM_COMMAND:
         {
             const int cmd = LOWORD(wParam);
+            if (cmd >= IDM_LENGTH_BASE && cmd < IDM_LENGTH_BASE + kLevelCount)
+            {
+                SetLengthLevel(cmd - IDM_LENGTH_BASE);
+                return 0;
+            }
             if (cmd >= IDM_DENSITY_BASE && cmd < IDM_DENSITY_BASE + kLevelCount)
             {
                 SetDensityLevel(cmd - IDM_DENSITY_BASE);

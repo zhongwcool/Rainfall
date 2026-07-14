@@ -60,12 +60,6 @@ private:
         float dropEnv = 0.0f;
         float dropNoiseLp = 0.0f;
         int dropCountdown = 0;
-        // 叶面共鸣：二阶谐振器，模拟雨点砸在芭蕉叶上的"啵"声
-        float res1 = 0.0f;
-        float res2 = 0.0f;
-        float resCoef1 = 0.0f;
-        float resCoef2 = 0.0f;
-        float excEnv = 0.0f;
     };
 
     void StreamThread();

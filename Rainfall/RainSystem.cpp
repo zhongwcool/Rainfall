@@ -47,16 +47,23 @@ void RainSystem::SetDensityScale(float scale)
     Rebuild();
 }
 
+void RainSystem::SetLengthScale(float scale)
+{
+    lengthScale_ = scale;
+    for (auto& drop : drops_)
+    {
+        ApplyDepth(drop);
+    }
+}
+
 void RainSystem::SetWindScale(float scale)
 {
     windScale_ = scale;
 }
 
-void RainSystem::SetIntensity(float speedScale, float lengthScale, float thicknessScale)
+void RainSystem::SetSpeedScale(float scale)
 {
-    speedScale_ = speedScale;
-    lengthScale_ = lengthScale;
-    thicknessScale_ = thicknessScale;
+    speedScale_ = scale;
     for (auto& drop : drops_)
     {
         ApplyDepth(drop);
@@ -79,7 +86,7 @@ void RainSystem::ApplyDepth(Raindrop& drop)
 
     drop.speed = Lerp(4.0f, 14.0f, depth) * speedScale_;
     drop.length = Lerp(10.0f, 36.0f, depth) * lengthScale_;
-    drop.thickness = Lerp(1.0f, 2.8f, depth) * thicknessScale_;
+    drop.thickness = Lerp(1.0f, 2.8f, depth);
     drop.alpha = Lerp(0.18f, 0.95f, depth);
 }
 
