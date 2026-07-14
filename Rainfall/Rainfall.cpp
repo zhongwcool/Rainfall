@@ -38,6 +38,7 @@ namespace
     bool g_windRight = true; // true: 向右下；false: 向左下
 
     bool g_soundEnabled = true;
+    bool g_alwaysOnTop = true;
     RainAudio g_rainAudio;
 
     struct OverlayWindow
@@ -63,6 +64,8 @@ namespace
     void ApplyLightMode();
     void ApplySound();
     void ToggleSound();
+    void ApplyAlwaysOnTop();
+    void ToggleAlwaysOnTop();
     void ApplyLength();
     void ApplyDensity();
     void ApplyWind();
@@ -132,6 +135,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     ApplySpeed();
     ApplyWindDirection();
     ApplyLightMode();
+    ApplyAlwaysOnTop();
 
     // 声音初始化失败也不影响视觉效果，静默降级
     if (g_rainAudio.Initialize())
@@ -188,8 +192,14 @@ namespace
         const int width = rect.right - rect.left;
         const int height = rect.bottom - rect.top;
 
+        DWORD exStyle = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        if (g_alwaysOnTop)
+        {
+            exStyle |= WS_EX_TOPMOST;
+        }
+
         HWND hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            exStyle,
             kWindowClassName,
             L"Rainfall",
             WS_POPUP,
@@ -327,6 +337,7 @@ namespace
             0, kLevelCount - 1);
         g_windRight = GetPrivateProfileIntW(L"Rainfall", L"WindRight", 1, path.c_str()) != 0;
         g_soundEnabled = GetPrivateProfileIntW(L"Rainfall", L"SoundEnabled", 1, path.c_str()) != 0;
+        g_alwaysOnTop = GetPrivateProfileIntW(L"Rainfall", L"AlwaysOnTop", 1, path.c_str()) != 0;
     }
 
     void SaveConfig()
@@ -350,6 +361,7 @@ namespace
         WritePrivateProfileStringW(L"Rainfall", L"SpeedLevel", buf, path.c_str());
         WritePrivateProfileStringW(L"Rainfall", L"WindRight", g_windRight ? L"1" : L"0", path.c_str());
         WritePrivateProfileStringW(L"Rainfall", L"SoundEnabled", g_soundEnabled ? L"1" : L"0", path.c_str());
+        WritePrivateProfileStringW(L"Rainfall", L"AlwaysOnTop", g_alwaysOnTop ? L"1" : L"0", path.c_str());
     }
 
     void ApplyLightMode()
@@ -388,6 +400,38 @@ namespace
     {
         g_soundEnabled = !g_soundEnabled;
         ApplySound();
+        SaveConfig();
+    }
+
+    void ApplyAlwaysOnTop()
+    {
+        const HWND zOrder = g_alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
+        for (auto& overlay : g_overlays)
+        {
+            if (!overlay.hwnd)
+            {
+                continue;
+            }
+
+            LONG_PTR exStyle = GetWindowLongPtrW(overlay.hwnd, GWL_EXSTYLE);
+            if (g_alwaysOnTop)
+            {
+                exStyle |= WS_EX_TOPMOST;
+            }
+            else
+            {
+                exStyle &= ~WS_EX_TOPMOST;
+            }
+            SetWindowLongPtrW(overlay.hwnd, GWL_EXSTYLE, exStyle);
+            SetWindowPos(overlay.hwnd, zOrder, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+
+    void ToggleAlwaysOnTop()
+    {
+        g_alwaysOnTop = !g_alwaysOnTop;
+        ApplyAlwaysOnTop();
         SaveConfig();
     }
 
@@ -524,6 +568,8 @@ namespace
             IDM_LIGHT_MODE, L"浅色背景增强(&L)");
         AppendMenuW(menu, MF_STRING | (g_soundEnabled ? MF_CHECKED : MF_UNCHECKED),
             IDM_SOUND, L"雨声(&V)");
+        AppendMenuW(menu, MF_STRING | (g_alwaysOnTop ? MF_CHECKED : MF_UNCHECKED),
+            IDM_ALWAYS_ON_TOP, L"总在最前(&T)");
 
         HMENU lengthMenu = CreatePopupMenu();
         HMENU densityMenu = CreatePopupMenu();
@@ -833,6 +879,9 @@ namespace
                 return 0;
             case IDM_SOUND:
                 ToggleSound();
+                return 0;
+            case IDM_ALWAYS_ON_TOP:
+                ToggleAlwaysOnTop();
                 return 0;
             case IDM_DIR_RIGHT:
                 SetWindDirection(true);

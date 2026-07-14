@@ -14,6 +14,7 @@
 #define IDM_TRAY_EXIT			107
 #define IDM_LIGHT_MODE			111
 #define IDM_SOUND				112
+#define IDM_ALWAYS_ON_TOP		113
 #define IDM_LENGTH_BASE			120
 #define IDM_DENSITY_BASE		130
 #define IDM_WIND_BASE			140
