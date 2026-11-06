@@ -526,7 +526,11 @@ namespace
         overlay->rainSystem = std::make_unique<RainSystem>();
         overlay->renderer = std::make_unique<RainRenderer>();
 
-        DWORD exStyle = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+        // 置顶窗口只在 WM_NCHITTEST 返回 HTTRANSPARENT 时，系统仍只在置顶层里继续查找，
+        // 点击到不了普通窗口，托盘也被挡住。WS_EX_LAYERED | WS_EX_TRANSPARENT 会在命中测试时直接跳过。
+        // 画面仍由 DirectComposition 提交，所以同时保留 WS_EX_NOREDIRECTIONBITMAP。
+        DWORD exStyle = WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT
+            | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         if (g_settings.alwaysOnTop)
         {
             exStyle |= WS_EX_TOPMOST;
@@ -547,6 +551,13 @@ namespace
             overlay.get());
         if (!hwnd)
         {
+            return false;
+        }
+
+        // 让分层窗口参与显示。透明度来自交换链的预乘 alpha，这里只避免窗口被系统当成未初始化。
+        if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA))
+        {
+            DestroyWindow(hwnd);
             return false;
         }
 
@@ -1174,6 +1185,16 @@ namespace
         {
             overlay->hwnd = nullptr;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
+
+        if (message == WM_ERASEBKGND)
+        {
+            return 1;
+        }
+
+        if (message == WM_MOUSEACTIVATE)
+        {
+            return MA_NOACTIVATE;
         }
 
         return DefWindowProcW(hwnd, message, wParam, lParam);

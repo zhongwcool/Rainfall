@@ -81,7 +81,7 @@ git push origin v1.0.0
 - C++20
 - Win32 API
 - Direct2D（雨滴渲染）
-- 分层透明窗口（`WS_EX_LAYERED` + `UpdateLayeredWindow`）
+- DirectComposition（`WS_EX_NOREDIRECTIONBITMAP` + 预乘 alpha 交换链）
 
 ## 许可证
 
