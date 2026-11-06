@@ -2,16 +2,11 @@
 // Microsoft Visual C++ 生成的包含文件。
 // 使用者 Rainfall.rc
 
-#define IDS_APP_TITLE			103
-
-#define IDR_MAINFRAME			128
-#define IDD_RAINFALL_DIALOG	102
 #define IDD_ABOUTBOX			103
 #define IDC_ABOUT_EMAIL			200
 #define IDM_ABOUT				104
-#define IDM_EXIT				105
 #define IDM_PAUSE				106
-#define IDM_TRAY_EXIT			107
+#define IDM_TRAY_EXIT			114
 #define IDM_LIGHT_MODE			111
 #define IDM_SOUND				112
 #define IDM_ALWAYS_ON_TOP		113
@@ -22,9 +17,6 @@
 #define IDM_DIR_RIGHT			160
 #define IDM_DIR_LEFT			161
 #define IDI_RAINFALL			107
-#define IDI_SMALL				108
-#define IDC_RAINFALL			109
-#define IDC_MYICON				2
 #ifndef IDC_STATIC
 #define IDC_STATIC				-1
 #endif

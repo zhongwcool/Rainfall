@@ -3,14 +3,6 @@
 #include <algorithm>
 #include <cmath>
 
-namespace
-{
-    float Lerp(float a, float b, float t)
-    {
-        return a + (b - a) * t;
-    }
-}
-
 RainAudio::~RainAudio()
 {
     Shutdown();
@@ -156,12 +148,12 @@ void RainAudio::FillBuffer(short* samples)
 
     // 底噪（雨幕沙沙声）：强度越大越响、越"亮"
     const float hissGain = 0.015f + 0.24f * t * std::sqrt(t);
-    const float lpCoeff = Lerp(0.045f, 0.22f, t);
+    const float lpCoeff = std::lerp(0.045f, 0.22f, t);
 
     // 雨点脆响：每声道每秒触发次数
-    const float dropsPerSecond = Lerp(3.0f, 55.0f, t * t);
+    const float dropsPerSecond = std::lerp(3.0f, 55.0f, t * t);
     const float meanInterval = static_cast<float>(kSampleRate) / std::max(dropsPerSecond, 0.5f);
-    const float dropGain = Lerp(0.10f, 0.30f, t);
+    const float dropGain = std::lerp(0.10f, 0.30f, t);
     const float dropDecay = 0.9974f; // 约 9ms 衰减的短促"嗒"声
 
     const bool audible = enabled_.load() && !paused_.load();

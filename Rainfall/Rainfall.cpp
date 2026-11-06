@@ -8,6 +8,9 @@
 #include <shlobj.h>
 #include <string>
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
 #include <new>
 
 namespace
@@ -26,6 +29,63 @@ namespace
     constexpr wchar_t kControllerClassName[] = L"RainfallControllerClass";
     constexpr wchar_t kToastClassName[] = L"RainfallToastClass";
     constexpr wchar_t kAuthorEmail[] = L"zhongwcool@163.com";
+    constexpr wchar_t kConfigSection[] = L"Rainfall";
+
+    // 5 挡：索引 0~4，默认第 3 挡（索引 2）等于原始效果
+    constexpr int kLevelCount = 5;
+    constexpr int kDefaultLevel = 2;
+    constexpr float kLengthScales[kLevelCount] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f };
+    constexpr float kDensityScales[kLevelCount] = { 0.1f, 0.35f, 1.0f, 1.5f, 2.0f };
+    // 风力：角度倍率，越大越倾斜（第 3 挡 = 原始轻微倾斜）
+    constexpr float kWindScales[kLevelCount] = { 0.3f, 0.6f, 1.0f, 2.5f, 4.5f };
+    // 雨势：速度倍率，越大落得越快（默认第 3 挡 = 原第 4 挡的 1.5）
+    constexpr float kSpeedScales[kLevelCount] = { 0.75f, 1.1f, 1.5f, 2.0f, 2.6f };
+
+    enum class LevelKind
+    {
+        Length,
+        Density,
+        Wind,
+        Speed,
+        Count,
+    };
+
+    // 长度 / 密度 / 风力 / 雨势共用这一行。新增同类选项只加一行。
+    struct LevelSetting
+    {
+        const wchar_t* iniKey = nullptr;
+        const wchar_t* menuLabel = nullptr;
+        UINT idBase = 0;
+        const float* scales = nullptr;
+        void (RainSystem::*apply)(float) = nullptr;
+        bool affectsSound = false;
+        int level = kDefaultLevel;
+    };
+
+    struct Settings
+    {
+        bool lightMode = false;
+        bool windRight = true;
+        bool soundEnabled = true;
+        bool alwaysOnTop = true;
+        LevelSetting levels[static_cast<int>(LevelKind::Count)]{};
+
+        LevelSetting& Level(LevelKind kind)
+        {
+            return levels[static_cast<int>(kind)];
+        }
+        const LevelSetting& Level(LevelKind kind) const
+        {
+            return levels[static_cast<int>(kind)];
+        }
+
+        const std::wstring& ConfigPath();
+        void Load();
+        void Save();
+
+        std::wstring configPath;
+        bool configResolved = false;
+    };
 
     struct ScopedMutex
     {
@@ -63,31 +123,20 @@ namespace
     HWND g_aboutDlg = nullptr;
     HWND g_toastWnd = nullptr;
     bool g_paused = false;
-    bool g_lightMode = false;
     bool g_trayAdded = false;
     bool g_usingFallbackTimer = false;
     int g_trayRetries = 0;
     UINT g_taskbarCreatedMsg = 0;
     HICON g_trayIcon = nullptr;
 
-    // 5 挡：索引 0~4，默认第 3 挡（索引 2）等于原始效果
-    constexpr int kLevelCount = 5;
-    constexpr int kDefaultLevel = 2;
-    constexpr float kLengthScales[kLevelCount] = { 1.0f, 1.5f, 2.0f, 3.0f, 4.0f };
-    constexpr float kDensityScales[kLevelCount] = { 0.1f, 0.35f, 1.0f, 1.5f, 2.0f };
-    // 风力：角度倍率，越大越倾斜（第 3 挡 = 原始轻微倾斜）
-    constexpr float kWindScales[kLevelCount] = { 0.3f, 0.6f, 1.0f, 2.5f, 4.5f };
-    // 雨势：速度倍率，越大落得越快（默认第 3 挡 = 原第 4 挡的 1.5）
-    constexpr float kSpeedScales[kLevelCount] = { 0.75f, 1.1f, 1.5f, 2.0f, 2.6f };
-
-    int g_lengthLevel = kDefaultLevel;
-    int g_densityLevel = kDefaultLevel;
-    int g_windLevel = kDefaultLevel;
-    int g_speedLevel = kDefaultLevel;
-    bool g_windRight = true; // true: 向右下；false: 向左下
-
-    bool g_soundEnabled = true;
-    bool g_alwaysOnTop = true;
+    Settings g_settings{
+        .levels = {
+            { L"LengthLevel", L"雨滴长度(&G)", IDM_LENGTH_BASE, kLengthScales, &RainSystem::SetLengthScale, false, kDefaultLevel },
+            { L"DensityLevel", L"雨滴密度(&D)", IDM_DENSITY_BASE, kDensityScales, &RainSystem::SetDensityScale, true, kDefaultLevel },
+            { L"WindLevel", L"风力(&W)", IDM_WIND_BASE, kWindScales, &RainSystem::SetWindScale, false, kDefaultLevel },
+            { L"SpeedLevel", L"雨势(&S)", IDM_SPEED_BASE, kSpeedScales, &RainSystem::SetSpeedScale, true, kDefaultLevel },
+        },
+    };
     RainAudio g_rainAudio;
     FrameClock g_frameClock;
     LARGE_INTEGER g_qpcFrequency{};
@@ -95,48 +144,81 @@ namespace
 
     std::vector<std::unique_ptr<OverlayWindow>> g_overlays;
 
-    void ShowTrayMenu(HWND hwnd);
-    void ShowAboutDialog(HWND hwnd);
-    void ShowToast(const wchar_t* message);
-    INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT message, WPARAM wParam, LPARAM lParam);
-    LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
-    void RegisterToastClass();
-    bool AddTrayIcon(HWND hwnd);
-    void RemoveTrayIcon(HWND hwnd);
-    void DestroyTrayIconHandle();
-    void EnsureTrayIcon(HWND hwnd);
-    void TogglePause();
-    void ToggleLightMode();
-    void ApplyLightMode();
+    // 进程退出时按声明的反序析构：先停声音，再拆窗口，最后释放工厂和 COM。
+    struct ScopedCom
+    {
+        HRESULT hr = E_FAIL;
+        ScopedCom()
+        {
+            hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        }
+        ~ScopedCom()
+        {
+            if (SUCCEEDED(hr))
+            {
+                CoUninitialize();
+            }
+        }
+        explicit operator bool() const
+        {
+            return SUCCEEDED(hr);
+        }
+        ScopedCom(const ScopedCom&) = delete;
+        ScopedCom& operator=(const ScopedCom&) = delete;
+    };
+
+    struct ScopedRendererFactory
+    {
+        bool active = false;
+        ScopedRendererFactory()
+        {
+            active = RainRenderer::InitializeFactory();
+        }
+        ~ScopedRendererFactory()
+        {
+            if (active)
+            {
+                RainRenderer::ShutdownFactory();
+            }
+        }
+        explicit operator bool() const
+        {
+            return active;
+        }
+        ScopedRendererFactory(const ScopedRendererFactory&) = delete;
+        ScopedRendererFactory& operator=(const ScopedRendererFactory&) = delete;
+    };
+
+    struct ScopedControllerWindow
+    {
+        ~ScopedControllerWindow()
+        {
+            g_frameClock.Stop();
+            if (!g_controller)
+            {
+                return;
+            }
+            DestroyWindow(g_controller);
+            g_controller = nullptr;
+        }
+    };
+
+    struct ScopedAudio
+    {
+        ~ScopedAudio()
+        {
+            g_rainAudio.Shutdown();
+        }
+    };
+
     void ApplySound();
-    void ToggleSound();
-    void ApplyAlwaysOnTop();
-    void ToggleAlwaysOnTop();
-    void ApplyLength();
-    void ApplyDensity();
-    void ApplyWind();
-    void ApplySpeed();
-    void ApplyWindDirection();
-    void ApplySettingsTo(OverlayWindow& overlay);
-    void SetWindDirection(bool right);
-    void SetLengthLevel(int level);
-    void SetDensityLevel(int level);
-    void SetWindLevel(int level);
-    void SetSpeedLevel(int level);
-    std::wstring GetConfigPath();
-    void LoadConfig();
-    void SaveConfig();
-    void DestroyAllOverlays();
-    void RebuildOverlays();
-    void TickFrame();
-    int PixelsToDips(int pixels, UINT dpi);
-    bool CreateOverlayForMonitor(HMONITOR monitor);
-    BOOL CALLBACK MonitorEnumProc(HMONITOR monitor, HDC, LPRECT, LPARAM);
-    LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
-    LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    void EnsureTrayIcon(HWND hwnd);
     ATOM RegisterOverlayClass(HINSTANCE instance);
     ATOM RegisterControllerClass(HINSTANCE instance);
-    bool CreateAllOverlays(HINSTANCE instance);
+    bool CreateOverlayForMonitor(HMONITOR monitor);
+    bool CreateAllOverlays();
+    LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
@@ -158,19 +240,17 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     g_instance = hInstance;
 
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
+    ScopedCom com;
+    if (!com)
     {
         return 1;
     }
 
-    LoadConfig();
+    g_settings.Load();
 
-    if (!RainRenderer::InitializeFactory()
-        || !RegisterOverlayClass(hInstance)
-        || !RegisterControllerClass(hInstance))
+    ScopedRendererFactory factory;
+    if (!factory || !RegisterOverlayClass(hInstance) || !RegisterControllerClass(hInstance))
     {
-        RainRenderer::ShutdownFactory();
-        CoUninitialize();
         return 1;
     }
 
@@ -189,10 +269,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         nullptr);
     if (!g_controller)
     {
-        RainRenderer::ShutdownFactory();
-        CoUninitialize();
         return 1;
     }
+    ScopedControllerWindow controllerWindow;
 
     g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
     if (g_taskbarCreatedMsg != 0)
@@ -200,18 +279,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         ChangeWindowMessageFilterEx(g_controller, g_taskbarCreatedMsg, MSGFLT_ALLOW, nullptr);
     }
 
-    if (!CreateAllOverlays(hInstance))
+    if (!CreateAllOverlays())
     {
-        DestroyWindow(g_controller);
-        g_controller = nullptr;
-        RainRenderer::ShutdownFactory();
-        CoUninitialize();
         return 1;
     }
 
     EnsureTrayIcon(g_controller);
     QueryPerformanceFrequency(&g_qpcFrequency);
 
+    ScopedAudio audio;
     if (g_rainAudio.Initialize())
     {
         ApplySound();
@@ -234,33 +310,83 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         DispatchMessageW(&msg);
     }
 
-    g_frameClock.Stop();
-    g_rainAudio.Shutdown();
-    RemoveTrayIcon(g_controller);
-    DestroyTrayIconHandle();
-    if (g_toastWnd)
-    {
-        DestroyWindow(g_toastWnd);
-        g_toastWnd = nullptr;
-    }
-    if (g_aboutDlg)
-    {
-        DestroyWindow(g_aboutDlg);
-        g_aboutDlg = nullptr;
-    }
-    DestroyAllOverlays();
-    if (g_controller)
-    {
-        DestroyWindow(g_controller);
-        g_controller = nullptr;
-    }
-    RainRenderer::ShutdownFactory();
-    CoUninitialize();
     return static_cast<int>(msg.wParam);
 }
 
 namespace
 {
+    const std::wstring& Settings::ConfigPath()
+    {
+        if (configResolved)
+        {
+            return configPath;
+        }
+
+        configResolved = true;
+        PWSTR appData = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData)))
+        {
+            configPath = appData;
+            CoTaskMemFree(appData);
+            configPath += L"\\Rainfall";
+            CreateDirectoryW(configPath.c_str(), nullptr);
+            configPath += L"\\config.ini";
+        }
+        return configPath;
+    }
+
+    void Settings::Load()
+    {
+        const std::wstring& path = ConfigPath();
+        if (path.empty())
+        {
+            return;
+        }
+
+        const wchar_t* file = path.c_str();
+        lightMode = GetPrivateProfileIntW(kConfigSection, L"LightMode", 0, file) != 0;
+        windRight = GetPrivateProfileIntW(kConfigSection, L"WindRight", 1, file) != 0;
+        soundEnabled = GetPrivateProfileIntW(kConfigSection, L"SoundEnabled", 1, file) != 0;
+        alwaysOnTop = GetPrivateProfileIntW(kConfigSection, L"AlwaysOnTop", 1, file) != 0;
+        for (LevelSetting& setting : levels)
+        {
+            setting.level = std::clamp(
+                static_cast<int>(GetPrivateProfileIntW(kConfigSection, setting.iniKey, kDefaultLevel, file)),
+                0, kLevelCount - 1);
+        }
+    }
+
+    void WriteProfileBool(const wchar_t* key, bool value, const wchar_t* path)
+    {
+        WritePrivateProfileStringW(kConfigSection, key, value ? L"1" : L"0", path);
+    }
+
+    void WriteProfileInt(const wchar_t* key, int value, const wchar_t* path)
+    {
+        wchar_t buf[16];
+        _itow_s(value, buf, 10);
+        WritePrivateProfileStringW(kConfigSection, key, buf, path);
+    }
+
+    void Settings::Save()
+    {
+        const std::wstring& path = ConfigPath();
+        if (path.empty())
+        {
+            return;
+        }
+
+        const wchar_t* file = path.c_str();
+        WriteProfileBool(L"LightMode", lightMode, file);
+        WriteProfileBool(L"WindRight", windRight, file);
+        WriteProfileBool(L"SoundEnabled", soundEnabled, file);
+        WriteProfileBool(L"AlwaysOnTop", alwaysOnTop, file);
+        for (const LevelSetting& setting : levels)
+        {
+            WriteProfileInt(setting.iniKey, setting.level, file);
+        }
+    }
+
     ATOM RegisterOverlayClass(HINSTANCE instance)
     {
         WNDCLASSEXW wcex{};
@@ -293,19 +419,82 @@ namespace
         return MulDiv(pixels, 96, static_cast<int>(dpi));
     }
 
+    void ApplyLevel(const LevelSetting& setting)
+    {
+        const float scale = setting.scales[setting.level];
+        for (const auto& overlay : g_overlays)
+        {
+            if (overlay && overlay->rainSystem)
+            {
+                std::invoke(setting.apply, *overlay->rainSystem, scale);
+            }
+        }
+    }
+
+    void ApplyWindDirection()
+    {
+        const int direction = g_settings.windRight ? 1 : -1;
+        for (const auto& overlay : g_overlays)
+        {
+            if (overlay && overlay->rainSystem)
+            {
+                overlay->rainSystem->SetWindDirection(direction);
+            }
+        }
+    }
+
     void ApplySettingsTo(OverlayWindow& overlay)
     {
         if (overlay.rainSystem)
         {
-            overlay.rainSystem->SetLengthScale(kLengthScales[g_lengthLevel]);
-            overlay.rainSystem->SetDensityScale(kDensityScales[g_densityLevel]);
-            overlay.rainSystem->SetWindScale(kWindScales[g_windLevel]);
-            overlay.rainSystem->SetSpeedScale(kSpeedScales[g_speedLevel]);
-            overlay.rainSystem->SetWindDirection(g_windRight ? 1 : -1);
+            for (const LevelSetting& setting : g_settings.levels)
+            {
+                std::invoke(setting.apply, *overlay.rainSystem, setting.scales[setting.level]);
+            }
+            overlay.rainSystem->SetWindDirection(g_settings.windRight ? 1 : -1);
         }
         if (overlay.renderer)
         {
-            overlay.renderer->SetLightMode(g_lightMode);
+            overlay.renderer->SetLightMode(g_settings.lightMode);
+        }
+    }
+
+    void ApplyLightMode()
+    {
+        for (const auto& overlay : g_overlays)
+        {
+            if (!overlay || !overlay->hwnd || !overlay->renderer || !overlay->rainSystem)
+            {
+                continue;
+            }
+
+            overlay->renderer->SetLightMode(g_settings.lightMode);
+            overlay->renderer->Render(*overlay->rainSystem);
+        }
+    }
+
+    void ApplySound()
+    {
+        // 雨声强度由"雨势"和"雨滴密度"共同决定：雨越大越密，声音越大越急
+        const float speedT = static_cast<float>(g_settings.Level(LevelKind::Speed).level) / (kLevelCount - 1);
+        const float densityT = static_cast<float>(g_settings.Level(LevelKind::Density).level) / (kLevelCount - 1);
+        g_rainAudio.SetIntensity(0.65f * speedT + 0.35f * densityT);
+        g_rainAudio.SetEnabled(g_settings.soundEnabled);
+        g_rainAudio.SetPaused(g_paused);
+    }
+
+    void ApplyAlwaysOnTop()
+    {
+        const HWND zOrder = g_settings.alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
+        for (const auto& overlay : g_overlays)
+        {
+            if (!overlay || !overlay->hwnd)
+            {
+                continue;
+            }
+
+            SetWindowPos(overlay->hwnd, zOrder, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 
@@ -338,7 +527,7 @@ namespace
         overlay->renderer = std::make_unique<RainRenderer>();
 
         DWORD exStyle = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-        if (g_alwaysOnTop)
+        if (g_settings.alwaysOnTop)
         {
             exStyle |= WS_EX_TOPMOST;
         }
@@ -367,6 +556,7 @@ namespace
             dpi = 96;
         }
         overlay->dpi = dpi;
+        // 尺寸还是 0，SetDensityScale 不会重建；紧接着的 Initialize 只生成一次雨滴。
         ApplySettingsTo(*overlay);
 
         if (!overlay->renderer->Initialize(hwnd, width, height, dpi))
@@ -384,7 +574,7 @@ namespace
         return true;
     }
 
-    bool CreateAllOverlays(HINSTANCE)
+    bool CreateAllOverlays()
     {
         if (!EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, 0))
         {
@@ -557,225 +747,43 @@ namespace
         SetTimer(hwnd, kTrayRetryTimerId, 2000, nullptr);
     }
 
-    std::wstring GetConfigPath()
-    {
-        PWSTR appData = nullptr;
-        std::wstring path;
-        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData)))
-        {
-            path = appData;
-            CoTaskMemFree(appData);
-            path += L"\\Rainfall";
-            CreateDirectoryW(path.c_str(), nullptr);
-            path += L"\\config.ini";
-        }
-        return path;
-    }
-
-    void LoadConfig()
-    {
-        const std::wstring path = GetConfigPath();
-        if (path.empty())
-        {
-            return;
-        }
-
-        g_lightMode = GetPrivateProfileIntW(L"Rainfall", L"LightMode", 0, path.c_str()) != 0;
-        g_lengthLevel = std::clamp(
-            static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"LengthLevel", kDefaultLevel, path.c_str())),
-            0, kLevelCount - 1);
-        g_densityLevel = std::clamp(
-            static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"DensityLevel", kDefaultLevel, path.c_str())),
-            0, kLevelCount - 1);
-        g_windLevel = std::clamp(
-            static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"WindLevel", kDefaultLevel, path.c_str())),
-            0, kLevelCount - 1);
-        g_speedLevel = std::clamp(
-            static_cast<int>(GetPrivateProfileIntW(L"Rainfall", L"SpeedLevel", kDefaultLevel, path.c_str())),
-            0, kLevelCount - 1);
-        g_windRight = GetPrivateProfileIntW(L"Rainfall", L"WindRight", 1, path.c_str()) != 0;
-        g_soundEnabled = GetPrivateProfileIntW(L"Rainfall", L"SoundEnabled", 1, path.c_str()) != 0;
-        g_alwaysOnTop = GetPrivateProfileIntW(L"Rainfall", L"AlwaysOnTop", 1, path.c_str()) != 0;
-    }
-
-    void SaveConfig()
-    {
-        const std::wstring path = GetConfigPath();
-        if (path.empty())
-        {
-            return;
-        }
-
-        WritePrivateProfileStringW(L"Rainfall", L"LightMode", g_lightMode ? L"1" : L"0", path.c_str());
-
-        wchar_t buf[16];
-        _itow_s(g_lengthLevel, buf, 10);
-        WritePrivateProfileStringW(L"Rainfall", L"LengthLevel", buf, path.c_str());
-        _itow_s(g_densityLevel, buf, 10);
-        WritePrivateProfileStringW(L"Rainfall", L"DensityLevel", buf, path.c_str());
-        _itow_s(g_windLevel, buf, 10);
-        WritePrivateProfileStringW(L"Rainfall", L"WindLevel", buf, path.c_str());
-        _itow_s(g_speedLevel, buf, 10);
-        WritePrivateProfileStringW(L"Rainfall", L"SpeedLevel", buf, path.c_str());
-        WritePrivateProfileStringW(L"Rainfall", L"WindRight", g_windRight ? L"1" : L"0", path.c_str());
-        WritePrivateProfileStringW(L"Rainfall", L"SoundEnabled", g_soundEnabled ? L"1" : L"0", path.c_str());
-        WritePrivateProfileStringW(L"Rainfall", L"AlwaysOnTop", g_alwaysOnTop ? L"1" : L"0", path.c_str());
-    }
-
-    void ApplyLightMode()
-    {
-        for (auto& overlay : g_overlays)
-        {
-            if (!overlay || !overlay->hwnd || !overlay->renderer || !overlay->rainSystem)
-            {
-                continue;
-            }
-
-            overlay->renderer->SetLightMode(g_lightMode);
-            overlay->renderer->Render(*overlay->rainSystem);
-        }
-    }
-
     void ToggleLightMode()
     {
-        g_lightMode = !g_lightMode;
+        g_settings.lightMode = !g_settings.lightMode;
         ApplyLightMode();
-        SaveConfig();
-    }
-
-    void ApplySound()
-    {
-        // 雨声强度由"雨势"和"雨滴密度"共同决定：雨越大越密，声音越大越急
-        const float speedT = static_cast<float>(g_speedLevel) / (kLevelCount - 1);
-        const float densityT = static_cast<float>(g_densityLevel) / (kLevelCount - 1);
-        g_rainAudio.SetIntensity(0.65f * speedT + 0.35f * densityT);
-        g_rainAudio.SetEnabled(g_soundEnabled);
-        g_rainAudio.SetPaused(g_paused);
+        g_settings.Save();
     }
 
     void ToggleSound()
     {
-        g_soundEnabled = !g_soundEnabled;
+        g_settings.soundEnabled = !g_settings.soundEnabled;
         ApplySound();
-        SaveConfig();
-    }
-
-    void ApplyAlwaysOnTop()
-    {
-        const HWND zOrder = g_alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
-        for (auto& overlay : g_overlays)
-        {
-            if (!overlay || !overlay->hwnd)
-            {
-                continue;
-            }
-
-            SetWindowPos(overlay->hwnd, zOrder, 0, 0, 0, 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
+        g_settings.Save();
     }
 
     void ToggleAlwaysOnTop()
     {
-        g_alwaysOnTop = !g_alwaysOnTop;
+        g_settings.alwaysOnTop = !g_settings.alwaysOnTop;
         ApplyAlwaysOnTop();
-        SaveConfig();
+        g_settings.Save();
     }
 
-    void ApplyLength()
+    void SetLevel(LevelSetting& setting, int level)
     {
-        const float scale = kLengthScales[g_lengthLevel];
-        for (auto& overlay : g_overlays)
+        setting.level = std::clamp(level, 0, kLevelCount - 1);
+        ApplyLevel(setting);
+        if (setting.affectsSound)
         {
-            if (overlay && overlay->rainSystem)
-            {
-                overlay->rainSystem->SetLengthScale(scale);
-            }
+            ApplySound();
         }
-    }
-
-    void ApplyDensity()
-    {
-        const float scale = kDensityScales[g_densityLevel];
-        for (auto& overlay : g_overlays)
-        {
-            if (overlay && overlay->rainSystem)
-            {
-                overlay->rainSystem->SetDensityScale(scale);
-            }
-        }
-    }
-
-    void SetLengthLevel(int level)
-    {
-        g_lengthLevel = std::clamp(level, 0, kLevelCount - 1);
-        ApplyLength();
-        SaveConfig();
-    }
-
-    void SetDensityLevel(int level)
-    {
-        g_densityLevel = std::clamp(level, 0, kLevelCount - 1);
-        ApplyDensity();
-        ApplySound();
-        SaveConfig();
-    }
-
-    void ApplyWind()
-    {
-        const float scale = kWindScales[g_windLevel];
-        for (auto& overlay : g_overlays)
-        {
-            if (overlay && overlay->rainSystem)
-            {
-                overlay->rainSystem->SetWindScale(scale);
-            }
-        }
-    }
-
-    void ApplySpeed()
-    {
-        const float scale = kSpeedScales[g_speedLevel];
-        for (auto& overlay : g_overlays)
-        {
-            if (overlay && overlay->rainSystem)
-            {
-                overlay->rainSystem->SetSpeedScale(scale);
-            }
-        }
-    }
-
-    void SetWindLevel(int level)
-    {
-        g_windLevel = std::clamp(level, 0, kLevelCount - 1);
-        ApplyWind();
-        SaveConfig();
-    }
-
-    void ApplyWindDirection()
-    {
-        for (auto& overlay : g_overlays)
-        {
-            if (overlay && overlay->rainSystem)
-            {
-                overlay->rainSystem->SetWindDirection(g_windRight ? 1 : -1);
-            }
-        }
+        g_settings.Save();
     }
 
     void SetWindDirection(bool right)
     {
-        g_windRight = right;
+        g_settings.windRight = right;
         ApplyWindDirection();
-        SaveConfig();
-    }
-
-    void SetSpeedLevel(int level)
-    {
-        g_speedLevel = std::clamp(level, 0, kLevelCount - 1);
-        ApplySpeed();
-        ApplySound();
-        SaveConfig();
+        g_settings.Save();
     }
 
     void TogglePause()
@@ -811,40 +819,40 @@ namespace
 
         const wchar_t* pauseLabel = g_paused ? L"继续(&R)" : L"暂停(&P)";
         AppendMenuW(menu, MF_STRING, IDM_PAUSE, pauseLabel);
-        AppendMenuW(menu, MF_STRING | (g_lightMode ? MF_CHECKED : MF_UNCHECKED),
+        AppendMenuW(menu, MF_STRING | (g_settings.lightMode ? MF_CHECKED : MF_UNCHECKED),
             IDM_LIGHT_MODE, L"浅色背景增强(&L)");
-        AppendMenuW(menu, MF_STRING | (g_soundEnabled ? MF_CHECKED : MF_UNCHECKED),
+        AppendMenuW(menu, MF_STRING | (g_settings.soundEnabled ? MF_CHECKED : MF_UNCHECKED),
             IDM_SOUND, L"雨声(&V)");
-        AppendMenuW(menu, MF_STRING | (g_alwaysOnTop ? MF_CHECKED : MF_UNCHECKED),
+        AppendMenuW(menu, MF_STRING | (g_settings.alwaysOnTop ? MF_CHECKED : MF_UNCHECKED),
             IDM_ALWAYS_ON_TOP, L"总在最前(&T)");
 
-        HMENU lengthMenu = CreatePopupMenu();
-        HMENU densityMenu = CreatePopupMenu();
-        HMENU windMenu = CreatePopupMenu();
-        HMENU speedMenu = CreatePopupMenu();
-        HMENU dirMenu = CreatePopupMenu();
-        AppendMenuW(dirMenu, MF_STRING | (g_windRight ? MF_CHECKED : MF_UNCHECKED),
-            IDM_DIR_RIGHT, L"向右下");
-        AppendMenuW(dirMenu, MF_STRING | (!g_windRight ? MF_CHECKED : MF_UNCHECKED),
-            IDM_DIR_LEFT, L"向左下");
-        const wchar_t* levelLabels[kLevelCount] = { L"1 档", L"2 档", L"默认", L"4 档", L"5 档" };
-        for (int i = 0; i < kLevelCount; ++i)
-        {
-            AppendMenuW(lengthMenu, MF_STRING | (i == g_lengthLevel ? MF_CHECKED : MF_UNCHECKED),
-                IDM_LENGTH_BASE + i, levelLabels[i]);
-            AppendMenuW(densityMenu, MF_STRING | (i == g_densityLevel ? MF_CHECKED : MF_UNCHECKED),
-                IDM_DENSITY_BASE + i, levelLabels[i]);
-            AppendMenuW(windMenu, MF_STRING | (i == g_windLevel ? MF_CHECKED : MF_UNCHECKED),
-                IDM_WIND_BASE + i, levelLabels[i]);
-            AppendMenuW(speedMenu, MF_STRING | (i == g_speedLevel ? MF_CHECKED : MF_UNCHECKED),
-                IDM_SPEED_BASE + i, levelLabels[i]);
-        }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(lengthMenu), L"雨滴长度(&G)");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(densityMenu), L"雨滴密度(&D)");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(windMenu), L"风力(&W)");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(speedMenu), L"雨势(&S)");
-        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(dirMenu), L"风向(&F)");
+
+        const wchar_t* levelLabels[kLevelCount] = { L"1 档", L"2 档", L"默认", L"4 档", L"5 档" };
+        for (const LevelSetting& setting : g_settings.levels)
+        {
+            HMENU sub = CreatePopupMenu();
+            if (!sub)
+            {
+                continue;
+            }
+            for (int i = 0; i < kLevelCount; ++i)
+            {
+                AppendMenuW(sub, MF_STRING | (i == setting.level ? MF_CHECKED : MF_UNCHECKED),
+                    setting.idBase + i, levelLabels[i]);
+            }
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), setting.menuLabel);
+        }
+
+        HMENU dirMenu = CreatePopupMenu();
+        if (dirMenu)
+        {
+            AppendMenuW(dirMenu, MF_STRING | (g_settings.windRight ? MF_CHECKED : MF_UNCHECKED),
+                IDM_DIR_RIGHT, L"向右下");
+            AppendMenuW(dirMenu, MF_STRING | (!g_settings.windRight ? MF_CHECKED : MF_UNCHECKED),
+                IDM_DIR_LEFT, L"向左下");
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(dirMenu), L"风向(&F)");
+        }
 
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"关于(&A)");
@@ -907,6 +915,8 @@ namespace
 
         CloseClipboard();
     }
+
+    LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
     void RegisterToastClass()
     {
@@ -1225,28 +1235,16 @@ namespace
 
         case WM_COMMAND:
         {
-            const int cmd = LOWORD(wParam);
-            if (cmd >= IDM_LENGTH_BASE && cmd < IDM_LENGTH_BASE + kLevelCount)
+            const UINT command = LOWORD(wParam);
+            for (LevelSetting& setting : g_settings.levels)
             {
-                SetLengthLevel(cmd - IDM_LENGTH_BASE);
-                return 0;
+                if (command >= setting.idBase && command < setting.idBase + static_cast<UINT>(kLevelCount))
+                {
+                    SetLevel(setting, static_cast<int>(command - setting.idBase));
+                    return 0;
+                }
             }
-            if (cmd >= IDM_DENSITY_BASE && cmd < IDM_DENSITY_BASE + kLevelCount)
-            {
-                SetDensityLevel(cmd - IDM_DENSITY_BASE);
-                return 0;
-            }
-            if (cmd >= IDM_WIND_BASE && cmd < IDM_WIND_BASE + kLevelCount)
-            {
-                SetWindLevel(cmd - IDM_WIND_BASE);
-                return 0;
-            }
-            if (cmd >= IDM_SPEED_BASE && cmd < IDM_SPEED_BASE + kLevelCount)
-            {
-                SetSpeedLevel(cmd - IDM_SPEED_BASE);
-                return 0;
-            }
-            switch (cmd)
+            switch (command)
             {
             case IDM_PAUSE:
                 TogglePause();

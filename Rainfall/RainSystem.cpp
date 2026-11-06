@@ -5,11 +5,6 @@
 
 namespace
 {
-    float Lerp(float a, float b, float t)
-    {
-        return a + (b - a) * t;
-    }
-
     constexpr float kBaseAngleRad = 0.18f; // slight diagonal fall at wind scale 1.0
     constexpr float kMaxAngleRad = 1.05f;  // ~60°，风力最大时的倾斜上限
     // 原先 SetTimer(16ms) 实测约 40fps，按这个帧率换算才能保持原来的下落速度。
@@ -86,10 +81,10 @@ void RainSystem::ApplyDepth(Raindrop& drop)
 {
     const float depth = drop.depth;
 
-    drop.speed = Lerp(4.0f, 14.0f, depth) * speedScale_;
-    drop.length = Lerp(10.0f, 36.0f, depth) * lengthScale_;
-    drop.thickness = Lerp(1.0f, 2.8f, depth);
-    drop.alpha = Lerp(0.18f, 0.95f, depth);
+    drop.speed = std::lerp(4.0f, 14.0f, depth) * speedScale_;
+    drop.length = std::lerp(10.0f, 36.0f, depth) * lengthScale_;
+    drop.thickness = std::lerp(1.0f, 2.8f, depth);
+    drop.alpha = std::lerp(0.18f, 0.95f, depth);
 }
 
 void RainSystem::Respawn(Raindrop& drop, bool randomY)

@@ -231,7 +231,7 @@ void RainRenderer::Render(const RainSystem& system)
             highlightBrush_->SetEndPoint(hlHead);
             highlightBrush_->SetOpacity(drop.alpha * 0.9f);
             renderTarget_->DrawLine(hlTail, hlHead, highlightBrush_.Get(),
-                (std::max)(drop.thickness * 0.35f, 0.6f));
+                std::max(drop.thickness * 0.35f, 0.6f));
         }
     }
     else
