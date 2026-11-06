@@ -90,6 +90,20 @@ void FrameClock::Stop()
     target_ = nullptr;
 }
 
+void FrameClock::SetInterval(UINT intervalMs)
+{
+    intervalMs_ = intervalMs == 0 ? 1 : intervalMs;
+    if (timer_ && running_.load())
+    {
+        ArmTimer();
+    }
+}
+
+void FrameClock::SetRefreshWait(bool (*wait)())
+{
+    refreshWait_.store(wait);
+}
+
 void FrameClock::SetRunning(bool running)
 {
     running_.store(running);
@@ -148,21 +162,65 @@ void FrameClock::ThreadProc()
     const HANDLE handles[2] = { stopEvent_, timer_ };
     while (true)
     {
-        const DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
-        if (result == WAIT_OBJECT_0 || result == WAIT_FAILED)
+        if (!running_.load())
         {
-            break;
-        }
-        if (result != WAIT_OBJECT_0 + 1 || !running_.load())
-        {
+            const DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+            if (result == WAIT_OBJECT_0 || result == WAIT_FAILED)
+            {
+                break;
+            }
             continue;
         }
 
-        if (oneShot_.load())
+        // 跟垂直空白走，雨丝才会按屏幕刷新一格一格往下走。等不到就退回定时器。
+        bool paced = false;
+        if (const auto wait = refreshWait_.load())
         {
-            LARGE_INTEGER due{};
-            due.QuadPart = -10000LL * static_cast<LONGLONG>(intervalMs_);
-            SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE);
+            LARGE_INTEGER before{};
+            QueryPerformanceCounter(&before);
+            paced = wait();
+            LARGE_INTEGER after{};
+            QueryPerformanceCounter(&after);
+            LARGE_INTEGER frequency{};
+            QueryPerformanceFrequency(&frequency);
+            const double elapsedMs = frequency.QuadPart > 0
+                ? static_cast<double>(after.QuadPart - before.QuadPart) * 1000.0
+                    / static_cast<double>(frequency.QuadPart)
+                : 0.0;
+            // 立刻返回说明没有真正卡在刷新上，继续等会把这一帧线程转满。
+            if (elapsedMs < 1.0)
+            {
+                paced = false;
+            }
+        }
+
+        if (!paced)
+        {
+            const DWORD result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+            if (result == WAIT_OBJECT_0 || result == WAIT_FAILED)
+            {
+                break;
+            }
+            if (result != WAIT_OBJECT_0 + 1 || !running_.load())
+            {
+                continue;
+            }
+
+            if (oneShot_.load())
+            {
+                LARGE_INTEGER due{};
+                due.QuadPart = -10000LL * static_cast<LONGLONG>(intervalMs_);
+                SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE);
+            }
+        }
+
+        if (WaitForSingleObject(stopEvent_, 0) == WAIT_OBJECT_0)
+        {
+            break;
+        }
+        if (!running_.load())
+        {
+            continue;
         }
 
         if (!pending_.exchange(true))

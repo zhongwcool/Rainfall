@@ -14,6 +14,8 @@ class RainRenderer
 public:
     static bool InitializeFactory();
     static void ShutdownFactory();
+    // 等到这块屏幕的下一次垂直空白。设备还没建好或对不上显示器时返回 false。
+    static bool WaitForMonitorRefresh(HMONITOR monitor);
 
     RainRenderer() = default;
     ~RainRenderer();
@@ -41,7 +43,6 @@ private:
     DrawResult DrawFrame(const RainSystem& system);
     bool RecoverDevice();
     void ReleaseWindowResources();
-    bool CreateLightModeBrushes();
 
     HWND hwnd_ = nullptr;
     int width_ = 0;
@@ -56,6 +57,4 @@ private:
     Microsoft::WRL::ComPtr<IDCompositionTarget> compositionTarget_;
     Microsoft::WRL::ComPtr<IDCompositionVisual> visual_;
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> brush_;
-    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> bodyBrush_;
-    Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> highlightBrush_;
 };

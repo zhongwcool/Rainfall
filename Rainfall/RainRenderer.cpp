@@ -19,6 +19,11 @@ namespace
 
     SharedDevice g_shared;
 
+    // 浅色模式固定深色细线，不再按桌面亮度换色。
+    constexpr D2D1_COLOR_F kDarkDropColor{ 0.15f, 0.16f, 0.18f, 1.0f };
+    constexpr float kDarkDropThicknessScale = 0.5f;
+    constexpr float kDarkDropThicknessMin = 0.7f;
+
     bool IsDeviceLostError(HRESULT hr)
     {
         return hr == DXGI_ERROR_DEVICE_REMOVED
@@ -153,6 +158,45 @@ void RainRenderer::ShutdownFactory()
     g_shared.generation = 0;
 }
 
+bool RainRenderer::WaitForMonitorRefresh(HMONITOR monitor)
+{
+    if (!monitor || !g_shared.d3d || SharedDeviceRemoved())
+    {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGIDevice> dxgi;
+    Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
+    if (FAILED(g_shared.d3d.As(&dxgi)) || FAILED(dxgi->GetAdapter(adapter.GetAddressOf())))
+    {
+        return false;
+    }
+
+    for (UINT index = 0;; ++index)
+    {
+        Microsoft::WRL::ComPtr<IDXGIOutput> output;
+        const HRESULT enumerated = adapter->EnumOutputs(index, output.GetAddressOf());
+        if (enumerated == DXGI_ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        if (FAILED(enumerated) || !output)
+        {
+            continue;
+        }
+
+        DXGI_OUTPUT_DESC desc{};
+        if (FAILED(output->GetDesc(&desc)) || desc.Monitor != monitor)
+        {
+            continue;
+        }
+
+        return SUCCEEDED(output->WaitForVBlank());
+    }
+
+    return false;
+}
+
 RainRenderer::~RainRenderer()
 {
     ReleaseWindowResources();
@@ -162,8 +206,6 @@ void RainRenderer::ReleaseWindowResources()
 {
     UnbindTarget();
     brush_.Reset();
-    bodyBrush_.Reset();
-    highlightBrush_.Reset();
     context_.Reset();
 
     if (visual_)
@@ -240,8 +282,7 @@ bool RainRenderer::CreateWindowResources()
     context_->SetDpi(dpi, dpi);
 
     if (FAILED(context_->CreateSolidColorBrush(
-        D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), brush_.GetAddressOf()))
-        || !CreateLightModeBrushes())
+        D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), brush_.GetAddressOf())))
     {
         ReleaseWindowResources();
         return false;
@@ -334,38 +375,6 @@ HRESULT RainRenderer::PresentFrame()
     return g_shared.composition->Commit();
 }
 
-bool RainRenderer::CreateLightModeBrushes()
-{
-    // Tail fully transparent, head most visible: mimics a real rain streak.
-    const auto makeGradientBrush = [this](const D2D1_COLOR_F& color, float headAlpha,
-        Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush>& outBrush) -> bool
-    {
-        D2D1_GRADIENT_STOP stops[2]{};
-        stops[0].position = 0.0f;
-        stops[0].color = D2D1::ColorF(color.r, color.g, color.b, 0.0f);
-        stops[1].position = 1.0f;
-        stops[1].color = D2D1::ColorF(color.r, color.g, color.b, headAlpha);
-
-        Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> collection;
-        if (FAILED(context_->CreateGradientStopCollection(stops, 2, collection.GetAddressOf())))
-        {
-            return false;
-        }
-
-        return SUCCEEDED(context_->CreateLinearGradientBrush(
-            D2D1::LinearGradientBrushProperties(D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(0.0f, 1.0f)),
-            collection.Get(),
-            outBrush.GetAddressOf()));
-    };
-
-    // Body: cool gray-blue, close to the tint of real rain.
-    const D2D1_COLOR_F bodyColor = D2D1::ColorF(0.35f, 0.42f, 0.52f, 1.0f);
-    const D2D1_COLOR_F highlightColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f);
-
-    return makeGradientBrush(bodyColor, 0.62f, bodyBrush_)
-        && makeGradientBrush(highlightColor, 0.85f, highlightBrush_);
-}
-
 bool RainRenderer::Initialize(HWND hwnd, int width, int height, UINT dpi)
 {
     hwnd_ = hwnd;
@@ -424,49 +433,23 @@ RainRenderer::DrawResult RainRenderer::DrawFrame(const RainSystem& system)
     const float sinA = std::sin(angle);
     const float cosA = std::cos(angle);
 
-    if (lightMode_ && bodyBrush_ && highlightBrush_)
+    for (const Raindrop& drop : system.GetDrops())
     {
-        // Unit vector perpendicular to the fall direction, used to offset the highlight.
-        const float perpX = cosA;
-        const float perpY = -sinA;
+        const float tailX = drop.x - sinA * drop.length;
+        const float tailY = drop.y - cosA * drop.length;
+        const float thickness = lightMode_
+            ? std::max(drop.thickness * kDarkDropThicknessScale, kDarkDropThicknessMin)
+            : drop.thickness;
+        const D2D1_COLOR_F color = lightMode_
+            ? D2D1::ColorF(kDarkDropColor.r, kDarkDropColor.g, kDarkDropColor.b, drop.alpha)
+            : D2D1::ColorF(1.0f, 1.0f, 1.0f, drop.alpha);
 
-        for (const Raindrop& drop : system.GetDrops())
-        {
-            const D2D1_POINT_2F head = D2D1::Point2F(drop.x, drop.y);
-            const D2D1_POINT_2F tail = D2D1::Point2F(
-                drop.x - sinA * drop.length,
-                drop.y - cosA * drop.length);
-
-            bodyBrush_->SetStartPoint(tail);
-            bodyBrush_->SetEndPoint(head);
-            bodyBrush_->SetOpacity(drop.alpha);
-            context_->DrawLine(tail, head, bodyBrush_.Get(), drop.thickness * 0.85f);
-
-            const float offset = drop.thickness * 0.25f;
-            const D2D1_POINT_2F hlTail = D2D1::Point2F(tail.x + perpX * offset, tail.y + perpY * offset);
-            const D2D1_POINT_2F hlHead = D2D1::Point2F(head.x + perpX * offset, head.y + perpY * offset);
-
-            highlightBrush_->SetStartPoint(hlTail);
-            highlightBrush_->SetEndPoint(hlHead);
-            highlightBrush_->SetOpacity(drop.alpha * 0.9f);
-            context_->DrawLine(hlTail, hlHead, highlightBrush_.Get(),
-                std::max(drop.thickness * 0.35f, 0.6f));
-        }
-    }
-    else
-    {
-        for (const Raindrop& drop : system.GetDrops())
-        {
-            const float tailX = drop.x - sinA * drop.length;
-            const float tailY = drop.y - cosA * drop.length;
-
-            brush_->SetColor(D2D1::ColorF(1.0f, 1.0f, 1.0f, drop.alpha));
-            context_->DrawLine(
-                D2D1::Point2F(tailX, tailY),
-                D2D1::Point2F(drop.x, drop.y),
-                brush_.Get(),
-                drop.thickness);
-        }
+        brush_->SetColor(color);
+        context_->DrawLine(
+            D2D1::Point2F(tailX, tailY),
+            D2D1::Point2F(drop.x, drop.y),
+            brush_.Get(),
+            thickness);
     }
 
     const HRESULT endHr = context_->EndDraw();

@@ -141,6 +141,9 @@ namespace
     FrameClock g_frameClock;
     LARGE_INTEGER g_qpcFrequency{};
     LONGLONG g_lastFrameQpc = 0;
+    // 跟最快的那块屏幕走。60Hz 及以下仍用 16ms，避免比原来更慢。
+    HMONITOR g_paceMonitor = nullptr;
+    UINT g_frameIntervalMs = kFrameIntervalMs;
 
     std::vector<std::unique_ptr<OverlayWindow>> g_overlays;
 
@@ -217,6 +220,8 @@ namespace
     ATOM RegisterControllerClass(HINSTANCE instance);
     bool CreateOverlayForMonitor(HMONITOR monitor);
     bool CreateAllOverlays();
+    void UpdateFramePace();
+    bool WaitPaceRefresh();
     LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 }
@@ -293,10 +298,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         ApplySound();
     }
 
-    if (!g_frameClock.Start(g_controller, WM_APP_FRAME, kFrameIntervalMs))
+    UpdateFramePace();
+    g_frameClock.SetRefreshWait(WaitPaceRefresh);
+    if (!g_frameClock.Start(g_controller, WM_APP_FRAME, g_frameIntervalMs))
     {
         g_usingFallbackTimer = true;
-        SetTimer(g_controller, kFallbackFrameTimerId, kFrameIntervalMs, nullptr);
+        SetTimer(g_controller, kFallbackFrameTimerId, g_frameIntervalMs, nullptr);
     }
 
     MSG msg{};
@@ -613,6 +620,74 @@ namespace
         DestroyAllOverlays();
         EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, 0);
         g_lastFrameQpc = 0;
+        UpdateFramePace();
+    }
+
+    int MonitorRefreshHz(HMONITOR monitor)
+    {
+        MONITORINFOEXW info{};
+        info.cbSize = sizeof(info);
+        if (!monitor || !GetMonitorInfoW(monitor, &info))
+        {
+            return 60;
+        }
+
+        DEVMODEW mode{};
+        mode.dmSize = sizeof(mode);
+        if (!EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode))
+        {
+            return 60;
+        }
+        if (mode.dmDisplayFrequency <= 1)
+        {
+            return 60;
+        }
+        return static_cast<int>(mode.dmDisplayFrequency);
+    }
+
+    UINT IntervalForRefresh(int hz)
+    {
+        if (hz <= 60)
+        {
+            return kFrameIntervalMs;
+        }
+        hz = std::min(hz, 240);
+        const UINT interval = static_cast<UINT>((1000 + hz / 2) / hz);
+        return std::clamp(interval, 4u, kFrameIntervalMs);
+    }
+
+    void UpdateFramePace()
+    {
+        HMONITOR fastest = nullptr;
+        int bestHz = 0;
+        for (const auto& overlay : g_overlays)
+        {
+            if (!overlay)
+            {
+                continue;
+            }
+
+            const HMONITOR monitor = MonitorFromRect(&overlay->monitorRect, MONITOR_DEFAULTTONEAREST);
+            const int hz = MonitorRefreshHz(monitor);
+            if (hz > bestHz)
+            {
+                bestHz = hz;
+                fastest = monitor;
+            }
+        }
+
+        g_paceMonitor = fastest;
+        g_frameIntervalMs = IntervalForRefresh(bestHz > 0 ? bestHz : 60);
+        g_frameClock.SetInterval(g_frameIntervalMs);
+        if (g_usingFallbackTimer && g_controller && !g_paused)
+        {
+            SetTimer(g_controller, kFallbackFrameTimerId, g_frameIntervalMs, nullptr);
+        }
+    }
+
+    bool WaitPaceRefresh()
+    {
+        return RainRenderer::WaitForMonitorRefresh(g_paceMonitor);
     }
 
     void TickFrame()
@@ -816,7 +891,7 @@ namespace
         g_frameClock.SetRunning(true);
         if (g_usingFallbackTimer && g_controller)
         {
-            SetTimer(g_controller, kFallbackFrameTimerId, kFrameIntervalMs, nullptr);
+            SetTimer(g_controller, kFallbackFrameTimerId, g_frameIntervalMs, nullptr);
         }
     }
 

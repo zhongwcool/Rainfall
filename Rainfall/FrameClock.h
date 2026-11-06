@@ -25,6 +25,9 @@ public:
     bool Start(HWND target, UINT message, UINT intervalMs);
     void Stop();
     void SetRunning(bool running);
+    void SetInterval(UINT intervalMs);
+    // 返回 true 表示已经等到一次屏幕刷新。失败时改用定时器。
+    void SetRefreshWait(bool (*wait)());
     void Acknowledge();
 
 private:
@@ -37,6 +40,7 @@ private:
     std::atomic<bool> pending_{ false };
     std::atomic<bool> running_{ false };
     std::atomic<bool> oneShot_{ false };
+    std::atomic<bool (*)()> refreshWait_{ nullptr };
     HWND target_ = nullptr;
     UINT message_ = 0;
     UINT intervalMs_ = 16;
