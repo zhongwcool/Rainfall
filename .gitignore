@@ -421,6 +421,9 @@ FodyWeavers.xsd
 # Built Visual Studio Code Extensions
 *.vsix
 
+# 编译时根据 git tag 生成
+Rainfall/version.h
+
 # Windows Installer files from build outputs
 *.cab
 *.msi

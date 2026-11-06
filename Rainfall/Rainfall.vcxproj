@@ -161,6 +161,7 @@
     <ClInclude Include="RainSystem.h" />
     <ClInclude Include="Resource.h" />
     <ClInclude Include="targetver.h" />
+    <ClInclude Include="version.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="FrameClock.cpp" />
@@ -178,6 +179,11 @@
   <ItemGroup>
     <Image Include="Rainfall.ico" />
   </ItemGroup>
+  <ItemDefinitionGroup>
+    <PreBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -File "$(ProjectDir)..\scripts\write-version.ps1" -OutFile "$(ProjectDir)version.h"</Command>
+    </PreBuildEvent>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>

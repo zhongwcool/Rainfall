@@ -3,6 +3,7 @@
 // 使用者 Rainfall.rc
 
 #define IDD_ABOUTBOX			103
+#define IDC_ABOUT_VERSION		201
 #define IDC_ABOUT_EMAIL			200
 #define IDM_ABOUT				104
 #define IDM_PAUSE				106

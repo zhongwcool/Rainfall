@@ -1,4 +1,5 @@
 ﻿#include "framework.h"
+#include "version.h"
 #include "Rainfall.h"
 #include "RainSystem.h"
 #include "RainRenderer.h"
@@ -1166,6 +1167,7 @@ namespace
         {
         case WM_INITDIALOG:
             g_aboutDlg = dlg;
+            SetDlgItemTextW(dlg, IDC_ABOUT_VERSION, L"Rainfall, 版本 " RAINFALL_VERSION_W);
             CenterWindowOnScreen(dlg);
             return TRUE;
         case WM_SETCURSOR:
