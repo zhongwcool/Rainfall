@@ -45,7 +45,7 @@ jobs:
             exit 1
           }
 
-      - name: 打包
+      - name: 准备发布文件
         shell: pwsh
         run: |
           $exe = 'Rainfall\x64\Release\Rainfall.exe'
@@ -53,12 +53,10 @@ jobs:
             Write-Error "未找到编译产物: $exe"
             exit 1
           }
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item $exe dist\
-          Compress-Archive -Path dist\Rainfall.exe -DestinationPath "Rainfall-${{ github.ref_name }}-x64.zip" -Force
+          Copy-Item $exe "Rainfall-${{ github.ref_name }}-x64.exe"
 
       - name: 发布到 GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
-          files: Rainfall-${{ github.ref_name }}-x64.zip
+          files: Rainfall-${{ github.ref_name }}-x64.exe
           generate_release_notes: true

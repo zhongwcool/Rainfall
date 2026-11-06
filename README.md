@@ -49,7 +49,7 @@ SpeedLevel=2
 
 ## 下载
 
-在 [Releases](https://github.com/zhongwcool/Rainfall/releases) 页面下载 `Rainfall-vX.X.X-x64.zip`，解压后运行 `Rainfall.exe` 即可。
+在 [Releases](https://github.com/zhongwcool/Rainfall/releases) 页面下载 `Rainfall-vX.X.X-x64.exe`，直接运行即可。
 
 ## 本地编译
 
