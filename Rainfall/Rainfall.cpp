@@ -3,23 +3,72 @@
 #include "RainSystem.h"
 #include "RainRenderer.h"
 #include "RainAudio.h"
+#include "FrameClock.h"
 
 #include <shlobj.h>
 #include <string>
 #include <algorithm>
+#include <new>
 
 namespace
 {
     constexpr UINT WM_TRAYICON = WM_APP + 1;
-    constexpr UINT_PTR TIMER_ID = 1;
-    constexpr UINT TIMER_INTERVAL_MS = 16;
+    constexpr UINT WM_APP_FRAME = WM_APP + 2;
+    constexpr UINT WM_APP_REBUILD_OVERLAYS = WM_APP + 3;
+    constexpr UINT WM_APP_ALREADY_RUNNING = WM_APP + 4;
+    constexpr UINT_PTR kRebuildTimerId = 1;
+    constexpr UINT_PTR kTrayRetryTimerId = 2;
+    constexpr UINT_PTR kFallbackFrameTimerId = 3;
+    constexpr UINT_PTR kToastTimerId = 99;
+    constexpr UINT kFrameIntervalMs = 16;
+    constexpr int kTrayRetryLimit = 15;
     constexpr wchar_t kWindowClassName[] = L"RainfallOverlayClass";
+    constexpr wchar_t kControllerClassName[] = L"RainfallControllerClass";
+    constexpr wchar_t kToastClassName[] = L"RainfallToastClass";
+    constexpr wchar_t kAuthorEmail[] = L"zhongwcool@163.com";
+
+    struct ScopedMutex
+    {
+        HANDLE handle = nullptr;
+        ~ScopedMutex()
+        {
+            if (handle)
+            {
+                CloseHandle(handle);
+            }
+        }
+        ScopedMutex() = default;
+        ScopedMutex(const ScopedMutex&) = delete;
+        ScopedMutex& operator=(const ScopedMutex&) = delete;
+    };
+
+    struct ToastData
+    {
+        std::wstring text;
+        HFONT font = nullptr;
+        bool ownsFont = false;
+    };
+
+    struct OverlayWindow
+    {
+        HWND hwnd = nullptr;
+        RECT monitorRect{};
+        UINT dpi = 0;
+        std::unique_ptr<RainSystem> rainSystem;
+        std::unique_ptr<RainRenderer> renderer;
+    };
 
     HINSTANCE g_instance = nullptr;
+    HWND g_controller = nullptr;
+    HWND g_aboutDlg = nullptr;
+    HWND g_toastWnd = nullptr;
     bool g_paused = false;
     bool g_lightMode = false;
     bool g_trayAdded = false;
-    int g_aliveWindows = 0;
+    bool g_usingFallbackTimer = false;
+    int g_trayRetries = 0;
+    UINT g_taskbarCreatedMsg = 0;
+    HICON g_trayIcon = nullptr;
 
     // 5 挡：索引 0~4，默认第 3 挡（索引 2）等于原始效果
     constexpr int kLevelCount = 5;
@@ -40,25 +89,22 @@ namespace
     bool g_soundEnabled = true;
     bool g_alwaysOnTop = true;
     RainAudio g_rainAudio;
+    FrameClock g_frameClock;
+    LARGE_INTEGER g_qpcFrequency{};
+    LONGLONG g_lastFrameQpc = 0;
 
-    struct OverlayWindow
-    {
-        HWND hwnd = nullptr;
-        RECT monitorRect{};
-        std::unique_ptr<RainSystem> rainSystem;
-        std::unique_ptr<RainRenderer> renderer;
-    };
-
-    std::vector<OverlayWindow> g_overlays;
+    std::vector<std::unique_ptr<OverlayWindow>> g_overlays;
 
     void ShowTrayMenu(HWND hwnd);
     void ShowAboutDialog(HWND hwnd);
+    void ShowToast(const wchar_t* message);
     INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT message, WPARAM wParam, LPARAM lParam);
-    void ShowCopyToast(const wchar_t* message);
     LRESULT CALLBACK ToastWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     void RegisterToastClass();
     bool AddTrayIcon(HWND hwnd);
     void RemoveTrayIcon(HWND hwnd);
+    void DestroyTrayIconHandle();
+    void EnsureTrayIcon(HWND hwnd);
     void TogglePause();
     void ToggleLightMode();
     void ApplyLightMode();
@@ -71,6 +117,7 @@ namespace
     void ApplyWind();
     void ApplySpeed();
     void ApplyWindDirection();
+    void ApplySettingsTo(OverlayWindow& overlay);
     void SetWindDirection(bool right);
     void SetLengthLevel(int level);
     void SetDensityLevel(int level);
@@ -80,10 +127,15 @@ namespace
     void LoadConfig();
     void SaveConfig();
     void DestroyAllOverlays();
+    void RebuildOverlays();
+    void TickFrame();
+    int PixelsToDips(int pixels, UINT dpi);
     bool CreateOverlayForMonitor(HMONITOR monitor);
     BOOL CALLBACK MonitorEnumProc(HMONITOR monitor, HDC, LPRECT, LPARAM);
     LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+    LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
     ATOM RegisterOverlayClass(HINSTANCE instance);
+    ATOM RegisterControllerClass(HINSTANCE instance);
     bool CreateAllOverlays(HINSTANCE instance);
 }
 
@@ -92,6 +144,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     _In_ LPWSTR,
     _In_ int)
 {
+    ScopedMutex instanceMutex;
+    instanceMutex.handle = CreateMutexW(nullptr, FALSE,
+        L"Local\\Rainfall.SingleInstance.{4A0518FE-ECD4-4FBE-B9E8-317957DAE93C}");
+    if (instanceMutex.handle && GetLastError() == ERROR_ALREADY_EXISTS)
+    {
+        if (HWND existing = FindWindowW(kControllerClassName, nullptr))
+        {
+            PostMessageW(existing, WM_APP_ALREADY_RUNNING, 0, 0);
+        }
+        return 0;
+    }
+
     g_instance = hInstance;
 
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
@@ -101,58 +165,95 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     LoadConfig();
 
-    if (!RainRenderer::InitializeFactory())
-    {
-        CoUninitialize();
-        return 1;
-    }
-
-    if (!RegisterOverlayClass(hInstance))
+    if (!RainRenderer::InitializeFactory()
+        || !RegisterOverlayClass(hInstance)
+        || !RegisterControllerClass(hInstance))
     {
         RainRenderer::ShutdownFactory();
         CoUninitialize();
         return 1;
+    }
+
+    g_controller = CreateWindowExW(
+        WS_EX_TOOLWINDOW,
+        kControllerClassName,
+        L"Rainfall",
+        WS_POPUP,
+        0,
+        0,
+        0,
+        0,
+        nullptr,
+        nullptr,
+        hInstance,
+        nullptr);
+    if (!g_controller)
+    {
+        RainRenderer::ShutdownFactory();
+        CoUninitialize();
+        return 1;
+    }
+
+    g_taskbarCreatedMsg = RegisterWindowMessageW(L"TaskbarCreated");
+    if (g_taskbarCreatedMsg != 0)
+    {
+        ChangeWindowMessageFilterEx(g_controller, g_taskbarCreatedMsg, MSGFLT_ALLOW, nullptr);
     }
 
     if (!CreateAllOverlays(hInstance))
     {
+        DestroyWindow(g_controller);
+        g_controller = nullptr;
         RainRenderer::ShutdownFactory();
         CoUninitialize();
         return 1;
     }
 
-    if (!AddTrayIcon(g_overlays.empty() ? nullptr : g_overlays.front().hwnd))
-    {
-        DestroyAllOverlays();
-        RainRenderer::ShutdownFactory();
-        CoUninitialize();
-        return 1;
-    }
+    EnsureTrayIcon(g_controller);
+    QueryPerformanceFrequency(&g_qpcFrequency);
 
-    ApplyLength();
-    ApplyDensity();
-    ApplyWind();
-    ApplySpeed();
-    ApplyWindDirection();
-    ApplyLightMode();
-    ApplyAlwaysOnTop();
-
-    // 声音初始化失败也不影响视觉效果，静默降级
     if (g_rainAudio.Initialize())
     {
         ApplySound();
     }
 
-    MSG msg{};
-    while (GetMessage(&msg, nullptr, 0, 0))
+    if (!g_frameClock.Start(g_controller, WM_APP_FRAME, kFrameIntervalMs))
     {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        g_usingFallbackTimer = true;
+        SetTimer(g_controller, kFallbackFrameTimerId, kFrameIntervalMs, nullptr);
     }
 
+    MSG msg{};
+    while (GetMessageW(&msg, nullptr, 0, 0))
+    {
+        if (g_aboutDlg && IsDialogMessageW(g_aboutDlg, &msg))
+        {
+            continue;
+        }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    g_frameClock.Stop();
     g_rainAudio.Shutdown();
-    RemoveTrayIcon(g_overlays.empty() ? nullptr : g_overlays.front().hwnd);
+    RemoveTrayIcon(g_controller);
+    DestroyTrayIconHandle();
+    if (g_toastWnd)
+    {
+        DestroyWindow(g_toastWnd);
+        g_toastWnd = nullptr;
+    }
+    if (g_aboutDlg)
+    {
+        DestroyWindow(g_aboutDlg);
+        g_aboutDlg = nullptr;
+    }
     DestroyAllOverlays();
+    if (g_controller)
+    {
+        DestroyWindow(g_controller);
+        g_controller = nullptr;
+    }
     RainRenderer::ShutdownFactory();
     CoUninitialize();
     return static_cast<int>(msg.wParam);
@@ -173,6 +274,41 @@ namespace
         return RegisterClassExW(&wcex);
     }
 
+    ATOM RegisterControllerClass(HINSTANCE instance)
+    {
+        WNDCLASSEXW wcex{};
+        wcex.cbSize = sizeof(WNDCLASSEXW);
+        wcex.lpfnWndProc = ControllerWndProc;
+        wcex.hInstance = instance;
+        wcex.lpszClassName = kControllerClassName;
+        return RegisterClassExW(&wcex);
+    }
+
+    int PixelsToDips(int pixels, UINT dpi)
+    {
+        if (dpi == 0)
+        {
+            dpi = 96;
+        }
+        return MulDiv(pixels, 96, static_cast<int>(dpi));
+    }
+
+    void ApplySettingsTo(OverlayWindow& overlay)
+    {
+        if (overlay.rainSystem)
+        {
+            overlay.rainSystem->SetLengthScale(kLengthScales[g_lengthLevel]);
+            overlay.rainSystem->SetDensityScale(kDensityScales[g_densityLevel]);
+            overlay.rainSystem->SetWindScale(kWindScales[g_windLevel]);
+            overlay.rainSystem->SetSpeedScale(kSpeedScales[g_speedLevel]);
+            overlay.rainSystem->SetWindDirection(g_windRight ? 1 : -1);
+        }
+        if (overlay.renderer)
+        {
+            overlay.renderer->SetLightMode(g_lightMode);
+        }
+    }
+
     BOOL CALLBACK MonitorEnumProc(HMONITOR monitor, HDC, LPRECT, LPARAM)
     {
         CreateOverlayForMonitor(monitor);
@@ -191,6 +327,15 @@ namespace
         const RECT& rect = monitorInfo.rcMonitor;
         const int width = rect.right - rect.left;
         const int height = rect.bottom - rect.top;
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        auto overlay = std::make_unique<OverlayWindow>();
+        overlay->monitorRect = rect;
+        overlay->rainSystem = std::make_unique<RainSystem>();
+        overlay->renderer = std::make_unique<RainRenderer>();
 
         DWORD exStyle = WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
         if (g_alwaysOnTop)
@@ -210,35 +355,31 @@ namespace
             nullptr,
             nullptr,
             g_instance,
-            nullptr);
-
+            overlay.get());
         if (!hwnd)
         {
             return false;
         }
 
-        OverlayWindow overlay{};
-        overlay.hwnd = hwnd;
-        overlay.monitorRect = rect;
-        overlay.rainSystem = std::make_unique<RainSystem>();
-        overlay.renderer = std::make_unique<RainRenderer>();
+        UINT dpi = GetDpiForWindow(hwnd);
+        if (dpi == 0)
+        {
+            dpi = 96;
+        }
+        overlay->dpi = dpi;
+        ApplySettingsTo(*overlay);
 
-        overlay.rainSystem->Initialize(width, height);
-        if (!overlay.renderer->Initialize(hwnd, width, height))
+        if (!overlay->renderer->Initialize(hwnd, width, height, dpi))
         {
             DestroyWindow(hwnd);
             return false;
         }
 
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, static_cast<LONG_PTR>(g_overlays.size()));
+        overlay->rainSystem->Initialize(PixelsToDips(width, dpi), PixelsToDips(height, dpi));
+
         g_overlays.push_back(std::move(overlay));
-        ++g_aliveWindows;
-
-        OverlayWindow& created = g_overlays.back();
+        OverlayWindow& created = *g_overlays.back();
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        SetTimer(hwnd, TIMER_ID, TIMER_INTERVAL_MS, nullptr);
-
-        created.rainSystem->Update();
         created.renderer->Render(*created.rainSystem);
         return true;
     }
@@ -257,36 +398,116 @@ namespace
     {
         for (auto& overlay : g_overlays)
         {
-            if (overlay.hwnd)
+            if (overlay && overlay->hwnd)
             {
-                KillTimer(overlay.hwnd, TIMER_ID);
-                DestroyWindow(overlay.hwnd);
-                overlay.hwnd = nullptr;
+                DestroyWindow(overlay->hwnd);
             }
         }
 
         g_overlays.clear();
-        g_aliveWindows = 0;
+    }
+
+    void RebuildOverlays()
+    {
+        DestroyAllOverlays();
+        EnumDisplayMonitors(nullptr, nullptr, MonitorEnumProc, 0);
+        g_lastFrameQpc = 0;
+    }
+
+    void TickFrame()
+    {
+        LARGE_INTEGER now{};
+        QueryPerformanceCounter(&now);
+
+        float dt = 1.0f / 60.0f;
+        if (g_lastFrameQpc != 0 && g_qpcFrequency.QuadPart > 0)
+        {
+            const double seconds = static_cast<double>(now.QuadPart - g_lastFrameQpc)
+                / static_cast<double>(g_qpcFrequency.QuadPart);
+            dt = static_cast<float>(seconds);
+        }
+        g_lastFrameQpc = now.QuadPart;
+        dt = std::clamp(dt, 0.0f, 0.1f);
+
+        for (const auto& overlay : g_overlays)
+        {
+            if (!overlay || !overlay->hwnd || !overlay->rainSystem || !overlay->renderer)
+            {
+                continue;
+            }
+
+            overlay->rainSystem->Update(dt);
+            overlay->renderer->Render(*overlay->rainSystem);
+        }
     }
 
     bool AddTrayIcon(HWND hwnd)
     {
+        if (!hwnd)
+        {
+            return false;
+        }
+
+        UINT dpi = GetDpiForWindow(hwnd);
+        if (dpi == 0)
+        {
+            dpi = 96;
+        }
+
+        int cx = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+        int cy = GetSystemMetricsForDpi(SM_CYSMICON, dpi);
+        if (cx <= 0)
+        {
+            cx = 16;
+        }
+        if (cy <= 0)
+        {
+            cy = 16;
+        }
+
+        HICON icon = static_cast<HICON>(LoadImageW(
+            g_instance, MAKEINTRESOURCEW(IDI_RAINFALL), IMAGE_ICON, cx, cy, LR_DEFAULTCOLOR));
+        const bool ownsIcon = icon != nullptr;
+        if (!icon)
+        {
+            icon = LoadIconW(g_instance, MAKEINTRESOURCEW(IDI_RAINFALL));
+        }
+        if (!icon)
+        {
+            return false;
+        }
+
         NOTIFYICONDATAW nid{};
         nid.cbSize = sizeof(NOTIFYICONDATAW);
         nid.hWnd = hwnd;
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = LoadIcon(g_instance, MAKEINTRESOURCE(IDI_RAINFALL));
+        nid.hIcon = icon;
         wcscpy_s(nid.szTip, L"Rainfall - 屏幕雨幕");
 
-        g_trayAdded = Shell_NotifyIconW(NIM_ADD, &nid) == TRUE;
-        return g_trayAdded;
+        if (Shell_NotifyIconW(NIM_ADD, &nid) != TRUE)
+        {
+            if (ownsIcon)
+            {
+                DestroyIcon(icon);
+            }
+            g_trayAdded = false;
+            return false;
+        }
+
+        if (g_trayIcon && g_trayIcon != icon)
+        {
+            DestroyIcon(g_trayIcon);
+        }
+        g_trayIcon = ownsIcon ? icon : nullptr;
+        g_trayAdded = true;
+        return true;
     }
 
     void RemoveTrayIcon(HWND hwnd)
     {
-        if (!g_trayAdded)
+        if (!g_trayAdded || !hwnd)
         {
             return;
         }
@@ -297,6 +518,43 @@ namespace
         nid.uID = 1;
         Shell_NotifyIconW(NIM_DELETE, &nid);
         g_trayAdded = false;
+    }
+
+    void DestroyTrayIconHandle()
+    {
+        if (g_trayIcon)
+        {
+            DestroyIcon(g_trayIcon);
+            g_trayIcon = nullptr;
+        }
+    }
+
+    void EnsureTrayIcon(HWND hwnd)
+    {
+        if (!hwnd || g_trayAdded)
+        {
+            if (hwnd)
+            {
+                KillTimer(hwnd, kTrayRetryTimerId);
+            }
+            return;
+        }
+
+        if (AddTrayIcon(hwnd))
+        {
+            g_trayRetries = 0;
+            KillTimer(hwnd, kTrayRetryTimerId);
+            return;
+        }
+
+        if (g_trayRetries >= kTrayRetryLimit)
+        {
+            KillTimer(hwnd, kTrayRetryTimerId);
+            return;
+        }
+
+        ++g_trayRetries;
+        SetTimer(hwnd, kTrayRetryTimerId, 2000, nullptr);
     }
 
     std::wstring GetConfigPath()
@@ -366,16 +624,15 @@ namespace
 
     void ApplyLightMode()
     {
-        // 浅色模式：冷灰蓝雨丝 + 白色高光 + 尾部渐隐；关闭后恢复纯白实线
         for (auto& overlay : g_overlays)
         {
-            if (!overlay.hwnd || !overlay.renderer)
+            if (!overlay || !overlay->hwnd || !overlay->renderer || !overlay->rainSystem)
             {
                 continue;
             }
 
-            overlay.renderer->SetLightMode(g_lightMode);
-            overlay.renderer->Render(*overlay.rainSystem);
+            overlay->renderer->SetLightMode(g_lightMode);
+            overlay->renderer->Render(*overlay->rainSystem);
         }
     }
 
@@ -408,22 +665,12 @@ namespace
         const HWND zOrder = g_alwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST;
         for (auto& overlay : g_overlays)
         {
-            if (!overlay.hwnd)
+            if (!overlay || !overlay->hwnd)
             {
                 continue;
             }
 
-            LONG_PTR exStyle = GetWindowLongPtrW(overlay.hwnd, GWL_EXSTYLE);
-            if (g_alwaysOnTop)
-            {
-                exStyle |= WS_EX_TOPMOST;
-            }
-            else
-            {
-                exStyle &= ~WS_EX_TOPMOST;
-            }
-            SetWindowLongPtrW(overlay.hwnd, GWL_EXSTYLE, exStyle);
-            SetWindowPos(overlay.hwnd, zOrder, 0, 0, 0, 0,
+            SetWindowPos(overlay->hwnd, zOrder, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
@@ -440,9 +687,9 @@ namespace
         const float scale = kLengthScales[g_lengthLevel];
         for (auto& overlay : g_overlays)
         {
-            if (overlay.rainSystem)
+            if (overlay && overlay->rainSystem)
             {
-                overlay.rainSystem->SetLengthScale(scale);
+                overlay->rainSystem->SetLengthScale(scale);
             }
         }
     }
@@ -452,9 +699,9 @@ namespace
         const float scale = kDensityScales[g_densityLevel];
         for (auto& overlay : g_overlays)
         {
-            if (overlay.rainSystem)
+            if (overlay && overlay->rainSystem)
             {
-                overlay.rainSystem->SetDensityScale(scale);
+                overlay->rainSystem->SetDensityScale(scale);
             }
         }
     }
@@ -479,9 +726,9 @@ namespace
         const float scale = kWindScales[g_windLevel];
         for (auto& overlay : g_overlays)
         {
-            if (overlay.rainSystem)
+            if (overlay && overlay->rainSystem)
             {
-                overlay.rainSystem->SetWindScale(scale);
+                overlay->rainSystem->SetWindScale(scale);
             }
         }
     }
@@ -491,9 +738,9 @@ namespace
         const float scale = kSpeedScales[g_speedLevel];
         for (auto& overlay : g_overlays)
         {
-            if (overlay.rainSystem)
+            if (overlay && overlay->rainSystem)
             {
-                overlay.rainSystem->SetSpeedScale(scale);
+                overlay->rainSystem->SetSpeedScale(scale);
             }
         }
     }
@@ -509,9 +756,9 @@ namespace
     {
         for (auto& overlay : g_overlays)
         {
-            if (overlay.rainSystem)
+            if (overlay && overlay->rainSystem)
             {
-                overlay.rainSystem->SetWindDirection(g_windRight ? 1 : -1);
+                overlay->rainSystem->SetWindDirection(g_windRight ? 1 : -1);
             }
         }
     }
@@ -536,21 +783,21 @@ namespace
         g_paused = !g_paused;
         g_rainAudio.SetPaused(g_paused);
 
-        for (auto& overlay : g_overlays)
+        if (g_paused)
         {
-            if (!overlay.hwnd)
+            g_frameClock.SetRunning(false);
+            if (g_usingFallbackTimer && g_controller)
             {
-                continue;
+                KillTimer(g_controller, kFallbackFrameTimerId);
             }
+            return;
+        }
 
-            if (g_paused)
-            {
-                KillTimer(overlay.hwnd, TIMER_ID);
-            }
-            else
-            {
-                SetTimer(overlay.hwnd, TIMER_ID, TIMER_INTERVAL_MS, nullptr);
-            }
+        g_lastFrameQpc = 0;
+        g_frameClock.SetRunning(true);
+        if (g_usingFallbackTimer && g_controller)
+        {
+            SetTimer(g_controller, kFallbackFrameTimerId, kFrameIntervalMs, nullptr);
         }
     }
 
@@ -604,15 +851,13 @@ namespace
         AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, L"退出(&X)");
 
         SetForegroundWindow(hwnd);
-
         POINT cursor{};
         GetCursorPos(&cursor);
         TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
             cursor.x, cursor.y, 0, hwnd, nullptr);
+        PostMessageW(hwnd, WM_NULL, 0, 0);
         DestroyMenu(menu);
     }
-
-    constexpr wchar_t kAuthorEmail[] = L"zhongwcool@163.com";
 
     void CenterWindowOnScreen(HWND wnd)
     {
@@ -633,7 +878,7 @@ namespace
 
     void CopyTextToClipboard(const wchar_t* text)
     {
-        if (!OpenClipboard(nullptr))
+        if (!text || !OpenClipboard(nullptr))
         {
             return;
         }
@@ -649,16 +894,19 @@ namespace
             {
                 memcpy(dst, text, bytes);
                 GlobalUnlock(mem);
-                SetClipboardData(CF_UNICODETEXT, mem);
+                if (!SetClipboardData(CF_UNICODETEXT, mem))
+                {
+                    GlobalFree(mem);
+                }
+            }
+            else
+            {
+                GlobalFree(mem);
             }
         }
 
         CloseClipboard();
     }
-
-    constexpr UINT_PTR kToastTimerId = 99;
-    constexpr wchar_t kToastClassName[] = L"RainfallToastClass";
-    HWND g_toastWnd = nullptr;
 
     void RegisterToastClass()
     {
@@ -685,7 +933,7 @@ namespace
         {
         case WM_PAINT:
         {
-            const auto* text = reinterpret_cast<const wchar_t*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            const auto* data = reinterpret_cast<const ToastData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
             PAINTSTRUCT ps{};
             HDC dc = BeginPaint(hwnd, &ps);
 
@@ -693,12 +941,19 @@ namespace
             GetClientRect(hwnd, &rc);
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, RGB(255, 255, 255));
-            HFONT oldFont = static_cast<HFONT>(SelectObject(dc, GetStockObject(DEFAULT_GUI_FONT)));
-            if (text)
+            HFONT oldFont = nullptr;
+            if (data && data->font)
             {
-                DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                oldFont = static_cast<HFONT>(SelectObject(dc, data->font));
             }
-            SelectObject(dc, oldFont);
+            if (data)
+            {
+                DrawTextW(dc, data->text.c_str(), -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            }
+            if (oldFont)
+            {
+                SelectObject(dc, oldFont);
+            }
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -708,13 +963,24 @@ namespace
                 DestroyWindow(hwnd);
             }
             return 0;
-        case WM_DESTROY:
+        case WM_NCDESTROY:
+        {
+            auto* data = reinterpret_cast<ToastData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+            if (data)
+            {
+                if (data->ownsFont && data->font)
+                {
+                    DeleteObject(data->font);
+                }
+                delete data;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            }
             if (g_toastWnd == hwnd)
             {
                 g_toastWnd = nullptr;
             }
-            free(reinterpret_cast<void*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA)));
-            return 0;
+            break;
+        }
         default:
             break;
         }
@@ -722,51 +988,77 @@ namespace
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    void ShowCopyToast(const wchar_t* message)
+    void ShowToast(const wchar_t* message)
     {
         RegisterToastClass();
 
         if (g_toastWnd)
         {
-            KillTimer(g_toastWnd, kToastTimerId);
-            DestroyWindow(g_toastWnd);
+            const HWND old = g_toastWnd;
+            KillTimer(old, kToastTimerId);
+            DestroyWindow(old);
             g_toastWnd = nullptr;
         }
 
-        wchar_t* text = _wcsdup(message);
-        if (!text)
-        {
-            return;
-        }
-
-        constexpr int toastW = 300;
-        constexpr int toastH = 44;
-        const int screenW = GetSystemMetrics(SM_CXSCREEN);
-        const int screenH = GetSystemMetrics(SM_CYSCREEN);
-        const int x = (screenW - toastW) / 2;
-        const int y = screenH - toastH - 80;
+        constexpr int baseW = 300;
+        constexpr int baseH = 44;
+        constexpr int baseMargin = 80;
 
         g_toastWnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             kToastClassName,
             L"",
             WS_POPUP | WS_BORDER,
-            x,
-            y,
-            toastW,
-            toastH,
+            0,
+            0,
+            baseW,
+            baseH,
             nullptr,
             nullptr,
             g_instance,
             nullptr);
-
         if (!g_toastWnd)
         {
-            free(text);
             return;
         }
 
-        SetWindowLongPtrW(g_toastWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(text));
+        UINT dpi = GetDpiForWindow(g_toastWnd);
+        if (dpi == 0)
+        {
+            dpi = 96;
+        }
+
+        const int toastW = MulDiv(baseW, static_cast<int>(dpi), 96);
+        const int toastH = MulDiv(baseH, static_cast<int>(dpi), 96);
+        const int margin = MulDiv(baseMargin, static_cast<int>(dpi), 96);
+        const int screenW = GetSystemMetrics(SM_CXSCREEN);
+        const int screenH = GetSystemMetrics(SM_CYSCREEN);
+        const int x = (screenW - toastW) / 2;
+        const int y = screenH - toastH - margin;
+        SetWindowPos(g_toastWnd, HWND_TOPMOST, x, y, toastW, toastH, SWP_NOACTIVATE);
+
+        auto* data = new (std::nothrow) ToastData{};
+        if (!data)
+        {
+            DestroyWindow(g_toastWnd);
+            g_toastWnd = nullptr;
+            return;
+        }
+        data->text = message ? message : L"";
+
+        NONCLIENTMETRICS ncm{};
+        ncm.cbSize = sizeof(NONCLIENTMETRICS);
+        if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi))
+        {
+            data->font = CreateFontIndirectW(&ncm.lfMessageFont);
+            data->ownsFont = data->font != nullptr;
+        }
+        if (!data->font)
+        {
+            data->font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        }
+
+        SetWindowLongPtrW(g_toastWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
         ShowWindow(g_toastWnd, SW_SHOWNOACTIVATE);
         UpdateWindow(g_toastWnd);
         SetTimer(g_toastWnd, kToastTimerId, 2000, nullptr);
@@ -777,6 +1069,7 @@ namespace
         switch (message)
         {
         case WM_INITDIALOG:
+            g_aboutDlg = dlg;
             CenterWindowOnScreen(dlg);
             return TRUE;
         case WM_SETCURSOR:
@@ -795,17 +1088,26 @@ namespace
                 return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_3DFACE));
             }
             break;
+        case WM_CLOSE:
+            DestroyWindow(dlg);
+            return TRUE;
         case WM_COMMAND:
             if (LOWORD(wParam) == IDC_ABOUT_EMAIL && HIWORD(wParam) == STN_CLICKED)
             {
                 CopyTextToClipboard(kAuthorEmail);
-                ShowCopyToast(L"邮箱已复制到剪贴板");
+                ShowToast(L"邮箱已复制到剪贴板");
                 return TRUE;
             }
             if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
             {
-                EndDialog(dlg, LOWORD(wParam));
+                DestroyWindow(dlg);
                 return TRUE;
+            }
+            break;
+        case WM_DESTROY:
+            if (g_aboutDlg == dlg)
+            {
+                g_aboutDlg = nullptr;
             }
             break;
         default:
@@ -814,28 +1116,103 @@ namespace
         return FALSE;
     }
 
-    void ShowAboutDialog(HWND hwnd)
+    void ShowAboutDialog(HWND owner)
     {
-        DialogBoxW(g_instance, MAKEINTRESOURCE(IDD_ABOUTBOX), hwnd, AboutDlgProc);
+        if (g_aboutDlg)
+        {
+            SetForegroundWindow(g_aboutDlg);
+            return;
+        }
+
+        HWND dlg = CreateDialogW(g_instance, MAKEINTRESOURCEW(IDD_ABOUTBOX), owner, AboutDlgProc);
+        if (!dlg)
+        {
+            g_aboutDlg = nullptr;
+            return;
+        }
+
+        g_aboutDlg = dlg;
+        ShowWindow(dlg, SW_SHOW);
+        SetForegroundWindow(dlg);
     }
 
     LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
     {
-        const size_t index = static_cast<size_t>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-        if (index >= g_overlays.size())
+        if (message == WM_NCCREATE)
         {
-            return DefWindowProc(hwnd, message, wParam, lParam);
+            auto* created = static_cast<OverlayWindow*>(
+                reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams);
+            if (created)
+            {
+                created->hwnd = hwnd;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(created));
+            }
         }
 
-        OverlayWindow& overlay = g_overlays[index];
+        auto* overlay = reinterpret_cast<OverlayWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+        if (message == WM_DPICHANGED)
+        {
+            if (overlay && overlay->dpi != 0 && LOWORD(wParam) != overlay->dpi && g_controller)
+            {
+                PostMessageW(g_controller, WM_APP_REBUILD_OVERLAYS, 0, 0);
+            }
+            return 0;
+        }
+
+        if (message == WM_NCDESTROY && overlay)
+        {
+            overlay->hwnd = nullptr;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
+
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    LRESULT CALLBACK ControllerWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        if (g_taskbarCreatedMsg != 0 && message == g_taskbarCreatedMsg)
+        {
+            g_trayAdded = false;
+            g_trayRetries = 0;
+            EnsureTrayIcon(hwnd);
+            return 0;
+        }
 
         switch (message)
         {
-        case WM_TIMER:
-            if (wParam == TIMER_ID && !g_paused)
+        case WM_APP_FRAME:
+            if (!g_paused)
             {
-                overlay.rainSystem->Update();
-                overlay.renderer->Render(*overlay.rainSystem);
+                TickFrame();
+            }
+            g_frameClock.Acknowledge();
+            return 0;
+
+        case WM_APP_REBUILD_OVERLAYS:
+        case WM_DISPLAYCHANGE:
+            SetTimer(hwnd, kRebuildTimerId, 500, nullptr);
+            return 0;
+
+        case WM_APP_ALREADY_RUNNING:
+            ShowToast(L"Rainfall 已在运行，可在系统托盘中设置");
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == kRebuildTimerId)
+            {
+                KillTimer(hwnd, kRebuildTimerId);
+                RebuildOverlays();
+                return 0;
+            }
+            if (wParam == kTrayRetryTimerId)
+            {
+                EnsureTrayIcon(hwnd);
+                return 0;
+            }
+            if (wParam == kFallbackFrameTimerId && !g_paused)
+            {
+                TickFrame();
             }
             return 0;
 
@@ -893,9 +1270,7 @@ namespace
                 ShowAboutDialog(hwnd);
                 return 0;
             case IDM_TRAY_EXIT:
-                RemoveTrayIcon(hwnd);
-                DestroyAllOverlays();
-                PostQuitMessage(0);
+                DestroyWindow(hwnd);
                 return 0;
             default:
                 break;
@@ -904,19 +1279,31 @@ namespace
         }
 
         case WM_DESTROY:
-            KillTimer(hwnd, TIMER_ID);
-            overlay.hwnd = nullptr;
-            --g_aliveWindows;
-            if (g_aliveWindows <= 0)
+            g_frameClock.Stop();
+            KillTimer(hwnd, kRebuildTimerId);
+            KillTimer(hwnd, kTrayRetryTimerId);
+            KillTimer(hwnd, kFallbackFrameTimerId);
+            RemoveTrayIcon(hwnd);
+            DestroyTrayIconHandle();
+            if (g_toastWnd)
             {
-                PostQuitMessage(0);
+                DestroyWindow(g_toastWnd);
+                g_toastWnd = nullptr;
             }
+            if (g_aboutDlg)
+            {
+                DestroyWindow(g_aboutDlg);
+                g_aboutDlg = nullptr;
+            }
+            DestroyAllOverlays();
+            g_controller = nullptr;
+            PostQuitMessage(0);
             return 0;
 
         default:
             break;
         }
 
-        return DefWindowProc(hwnd, message, wParam, lParam);
+        return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 }

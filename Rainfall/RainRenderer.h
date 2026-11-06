@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "RainSystem.h"
 
@@ -17,8 +17,8 @@ public:
     RainRenderer(const RainRenderer&) = delete;
     RainRenderer& operator=(const RainRenderer&) = delete;
 
-    bool Initialize(HWND hwnd, int width, int height);
-    void Resize(int width, int height);
+    // width/height 是物理像素。dpi 必须是该显示器的 DPI，不能传 0。
+    bool Initialize(HWND hwnd, int width, int height, UINT dpi);
     void Render(const RainSystem& system);
     void SetLightMode(bool enabled);
 
@@ -30,6 +30,7 @@ private:
     HWND hwnd_ = nullptr;
     int width_ = 0;
     int height_ = 0;
+    UINT dpi_ = 96;
     bool lightMode_ = false;
 
     Microsoft::WRL::ComPtr<ID2D1RenderTarget> renderTarget_;

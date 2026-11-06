@@ -97,11 +97,12 @@ bool RainRenderer::CreateRenderTarget(int width, int height)
 
     SelectObject(memDc_, dibBitmap_);
 
+    // 传 0 时 D2D 改用系统 DPI。Per-Monitor 进程里坐标系会和位图尺寸错开，雨只出现在屏幕一角。
     D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
-        0,
-        0,
+        static_cast<float>(dpi_),
+        static_cast<float>(dpi_),
         D2D1_RENDER_TARGET_USAGE_GDI_COMPATIBLE);
 
     Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> dcRenderTarget;
@@ -166,23 +167,16 @@ bool RainRenderer::CreateLightModeBrushes()
         && makeGradientBrush(highlightColor, 0.85f, highlightBrush_);
 }
 
-bool RainRenderer::Initialize(HWND hwnd, int width, int height)
+bool RainRenderer::Initialize(HWND hwnd, int width, int height, UINT dpi)
 {
     hwnd_ = hwnd;
+    dpi_ = dpi == 0 ? 96 : dpi;
     return CreateRenderTarget(width, height);
 }
 
 void RainRenderer::SetLightMode(bool enabled)
 {
     lightMode_ = enabled;
-}
-
-void RainRenderer::Resize(int width, int height)
-{
-    if (width != width_ || height != height_)
-    {
-        CreateRenderTarget(width, height);
-    }
 }
 
 void RainRenderer::Render(const RainSystem& system)

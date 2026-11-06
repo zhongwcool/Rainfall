@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <vector>
 #include <random>
@@ -18,7 +18,8 @@ class RainSystem
 {
 public:
     void Initialize(int width, int height);
-    void Update();
+    // dtSeconds：距上一帧的秒数。speed 的单位是参考帧像素，见 RainSystem.cpp。
+    void Update(float dtSeconds);
 
     void SetDensityScale(float scale);
     void SetLengthScale(float scale);

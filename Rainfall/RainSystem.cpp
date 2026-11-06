@@ -1,4 +1,4 @@
-#include "RainSystem.h"
+﻿#include "RainSystem.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +12,8 @@ namespace
 
     constexpr float kBaseAngleRad = 0.18f; // slight diagonal fall at wind scale 1.0
     constexpr float kMaxAngleRad = 1.05f;  // ~60°，风力最大时的倾斜上限
+    // 原先 SetTimer(16ms) 实测约 40fps，按这个帧率换算才能保持原来的下落速度。
+    constexpr float kReferenceFps = 40.0f;
 }
 
 void RainSystem::Initialize(int width, int height)
@@ -131,16 +133,17 @@ void RainSystem::Respawn(Raindrop& drop, bool randomY)
     }
 }
 
-void RainSystem::Update()
+void RainSystem::Update(float dtSeconds)
 {
     const float angle = GetAngleRad();
     const float dx = std::sin(angle);
     const float dy = std::cos(angle);
+    const float step = dtSeconds * kReferenceFps;
 
     for (auto& drop : drops_)
     {
-        drop.x += dx * drop.speed;
-        drop.y += dy * drop.speed;
+        drop.x += dx * drop.speed * step;
+        drop.y += dy * drop.speed * step;
 
         if (drop.y - drop.length > height_ || drop.x < -drop.length || drop.x > width_ + drop.length)
         {
